@@ -73,6 +73,11 @@ class CalibrationCaptureWriter:
         self.key = invocation_key(self.seed, self.steps, self.shape)
         self.directory = output_directory / "refdelta_calibration" / self.calibration_id / self.key
         if self.directory.exists():
+            if (self.directory / "manifest.json").is_file():
+                raise FileExistsError(
+                    "completed RefDelta calibration capture already exists for "
+                    f"{self.key}; choose a new calibration_id instead of overwriting it"
+                )
             shutil.rmtree(self.directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.sigmas = [float(value) for value in sigmas.detach().float().cpu()]
@@ -265,6 +270,8 @@ def sample_refdelta_reference_replay(
         seed,
     )
     s_in = x.new_ones([x.shape[0]])
+    reference_evaluations = 0
+    all_reference_identical = True
     try:
         for step in range(steps):
             state, fused_x0 = replay.load_step(step, x.device)
@@ -272,11 +279,11 @@ def sample_refdelta_reference_replay(
             baseline["replay_reference_evaluated"] = replay.actual[step]
             if replay.actual[step]:
                 reference_x0 = model(state, sigmas[step] * s_in, **extra_args)
-                if torch.equal(reference_x0, fused_x0):
-                    raise ValueError(
-                        "RefDelta Reference Replay produced bit-identical x0 to the fused capture; "
-                        "verify that the existing MODEL loader was switched to genuine Ref2VA"
-                    )
+                reference_evaluations += 1
+                all_reference_identical = all_reference_identical and torch.equal(
+                    reference_x0,
+                    fused_x0,
+                )
                 baseline["reference"] = compare_same_state(
                     state,
                     sigmas[step],
@@ -305,6 +312,13 @@ def sample_refdelta_reference_replay(
                     }
                 )
             writer.write(baseline)
+        if reference_evaluations == 0:
+            raise RuntimeError("RefDelta calibration capture contains no actual model evaluations")
+        if all_reference_identical:
+            raise ValueError(
+                "RefDelta Reference Replay was bit-identical to the fused capture at every actual step; "
+                "verify that the existing MODEL loader was switched to genuine Ref2VA"
+            )
         return replay.load_final(x.device)
     finally:
         writer.close()
