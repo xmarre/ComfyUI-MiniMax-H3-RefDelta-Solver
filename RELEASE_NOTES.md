@@ -1,3 +1,22 @@
+# Unreleased
+
+## Reference calibration
+
+- Added a model-level `MiniMax H3 RefDelta Reference Diagnostic` that decorates the production MODEL instead of requiring the surrounding workflow to replace its guider.
+- Added a structural model-option contract for compatible runtimes such as H3 Continuum. The integration has no hard import dependency and fails explicitly on malformed or nested contracts.
+- Added a positive-only runtime guider mixin so Continuum can evaluate genuine Ref2VA with the exact per-chunk positive CONDITIONING and CFG=1 semantics used by its normal internal BasicGuider.
+- Retained the previous explicit reference GUIDER as a deprecated saved-workflow compatibility node.
+- Spectrum forecast calls remain reference-free; only actual fused evaluations produce matched genuine Ref2VA results.
+
+## Risk and telemetry
+
+- Split deterministic `trajectory_risk` from stochastic pressure. Adaptive ER order now responds only to trajectory evidence; stochastic adaptation uses combined evidence.
+- Measure stochastic pressure from the native pre-adaptation ER-SDE increment, preventing the previous gate from reducing its own future evidence.
+- Replace the hard-clamped stochastic/movement signal with the smooth bounded mapping `ratio / (1 + ratio)`.
+- Treat zero/frozen denoised movement as undefined stochastic evidence, eliminating the artificial first-step epsilon spike and frozen-stream risk floor.
+- Record native and actually-applied stochastic RMS/ratios separately while continuing to publish the exact post-gate increment to Spectrum.
+- Keep no-adaptation sampling numerically unchanged: with stochastic adaptation disabled the native and applied stochastic increments are identical.
+
 # MiniMax H3 RefDelta Solver v0.2.0
 
 v0.2.0 adds explicit compatibility with Spectrum MiniMax H3 v0.2.18+ while preserving RefDelta's actual-anchor evidence rules and adaptive stochastic path.
