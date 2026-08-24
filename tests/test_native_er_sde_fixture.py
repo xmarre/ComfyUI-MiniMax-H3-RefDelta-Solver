@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -9,8 +11,14 @@ from comfyui_refdelta_solver.config import RefDeltaSamplerConfig
 from comfyui_refdelta_solver.sampler import sample_refdelta_er_sde
 
 
-k_sampling = pytest.importorskip("comfy.k_diffusion.sampling")
-model_sampling_module = pytest.importorskip("comfy.model_sampling")
+def _required_comfy_module(name: str):
+    if os.environ.get("COMFYUI_PATH"):
+        return importlib.import_module(name)
+    return pytest.importorskip(name)
+
+
+k_sampling = _required_comfy_module("comfy.k_diffusion.sampling")
+model_sampling_module = _required_comfy_module("comfy.model_sampling")
 
 
 class _Sampling(model_sampling_module.CONST, model_sampling_module.ModelSamplingAV):
