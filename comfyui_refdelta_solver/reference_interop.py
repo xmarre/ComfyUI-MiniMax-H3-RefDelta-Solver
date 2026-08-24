@@ -57,7 +57,7 @@ class ReferenceDiagnosticSpec:
         del memo
         return self
 
-    def with_reference_model(self, reference_model: Any) -> "ReferenceDiagnosticSpec":
+    def with_reference_model(self, reference_model: Any) -> ReferenceDiagnosticSpec:
         return replace(self, reference_model=reference_model)
 
 
