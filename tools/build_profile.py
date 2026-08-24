@@ -130,7 +130,7 @@ def build_stability_density(
     if len(points) < 4:
         raise ValueError("experimental stability density needs at least four populated trajectory bins")
     if any(
-        value < 0.0
+        not math.isfinite(value) or value < 0.0
         for value in (
             trajectory_weight,
             curvature_weight,
@@ -139,7 +139,7 @@ def build_stability_density(
             instability_slope_weight,
         )
     ):
-        raise ValueError("stability-density weights must be non-negative")
+        raise ValueError("stability-density weights must be finite and non-negative")
     instability = [
         trajectory_weight * point["trajectory_risk"]
         + curvature_weight * point["curvature"]

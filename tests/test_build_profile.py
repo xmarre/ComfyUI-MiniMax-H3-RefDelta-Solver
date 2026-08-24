@@ -85,3 +85,17 @@ def test_experimental_density_requires_four_populated_bins():
             experimental_stability_density=True,
             weights=WEIGHTS,
         )
+
+
+@pytest.mark.parametrize("invalid", (float("nan"), float("inf"), float("-inf"), -0.1))
+def test_experimental_density_rejects_nonfinite_or_negative_weights(invalid):
+    weights = dict(WEIGHTS)
+    weights["trajectory_risk"] = invalid
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        build_profile(
+            _records(),
+            profile_id="test",
+            bins=4,
+            experimental_stability_density=True,
+            weights=weights,
+        )

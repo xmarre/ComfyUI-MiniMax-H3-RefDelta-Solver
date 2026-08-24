@@ -76,6 +76,27 @@ def test_calibration_capture_disables_native_delegation():
     assert not config.is_native_equivalence_mode
 
 
+@pytest.mark.parametrize("max_stage", (0, 4, 1.5, True))
+def test_invalid_max_stage_fails_before_model_access(max_stage):
+    class ModelAccessSpy:
+        accessed = False
+
+        @property
+        def inner_model(self):
+            self.accessed = True
+            raise AssertionError("model must not be accessed before max_stage validation")
+
+    model = ModelAccessSpy()
+    with pytest.raises(ValueError, match="max_stage"):
+        sample_refdelta_er_sde(
+            model,
+            torch.ones(1),
+            torch.tensor([1.0, 0.0]),
+            max_stage=max_stage,
+        )
+    assert model.accessed is False
+
+
 def test_stochastic_movement_ratio_is_undefined_without_real_movement():
     stochastic = torch.ones(4)
     assert _stochastic_movement_ratio(stochastic, torch.zeros(4)) is None
