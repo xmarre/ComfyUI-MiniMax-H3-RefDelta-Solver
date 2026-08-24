@@ -78,6 +78,19 @@ def _record_stream_norms(record: dict[str, Any], prefix: str, value: torch.Tenso
         record.setdefault(name, {})[prefix] = rms(stream)
 
 
+def _stochastic_movement_ratio(
+    stochastic: torch.Tensor,
+    movement: torch.Tensor,
+) -> torch.Tensor | None:
+    """Return stochastic/movement RMS only when movement defines a useful denominator."""
+    denominator = rms(movement)
+    eps = torch.finfo(movement.dtype).eps
+    if not bool(torch.isfinite(denominator)) or bool(denominator <= eps):
+        return None
+    ratio = rms(stochastic) / denominator
+    return torch.nan_to_num(ratio, nan=0.0, posinf=1e9, neginf=0.0).clamp_min(0.0)
+
+
 @torch.no_grad()
 def sample_refdelta_er_sde(
     model,
@@ -194,6 +207,10 @@ def sample_refdelta_er_sde(
                     record["effective_order"] = 1
                     record["risk"] = terminal_observation.risk
                     record["stream_risk"] = terminal_observation.stream_risks
+                    record["trajectory_risk"] = terminal_observation.trajectory_risk
+                    record["stream_trajectory_risk"] = terminal_observation.stream_trajectory_risks
+                    record["stochastic_pressure"] = terminal_observation.stochastic_pressure
+                    record["stream_stochastic_pressure"] = terminal_observation.stream_stochastic_pressures
                     record["risk_components"] = terminal_observation.components
                     record["denoised_difference_rms"] = terminal_observation.movement_rms
                     record["first_derivative_direction_cosine"] = terminal_observation.first_direction_cosine
@@ -302,7 +319,13 @@ def sample_refdelta_er_sde(
                 )
             else:
                 observation = last_actual_observation
-            stage2_gate, stage3_gate = adaptive_order_gates(observation.risk, config.adaptive_order)
+            # ER order responds only to the model trajectory. Native stochastic
+            # pressure is tracked separately and must not suppress deterministic
+            # stage-2/3 corrections merely because ER-SDE itself injects noise.
+            stage2_gate, stage3_gate = adaptive_order_gates(
+                observation.trajectory_risk,
+                config.adaptive_order,
+            )
             endpoint = endpoint_gate(i, total_steps, config.endpoint_fidelity_fraction, raw_denoised)
             corrected_denoised = raw_denoised
             correction_norms: dict[str, torch.Tensor] = {}
@@ -336,25 +359,32 @@ def sample_refdelta_er_sde(
             # one is native ER-SDE stochasticity, so endpoint fidelity must
             # return to one rather than suppressing the stock noise increment.
             stochastic_gate = 1.0 + endpoint * (adapted_stochastic_gate - 1.0)
+            native_stochastic = None
             stochastic = None
             if effective_s_noise > 0.0:
                 stochastic_scale = (er_lambda_t ** 2 - er_lambda_s ** 2 * r ** 2).sqrt().nan_to_num(nan=0.0)
-                stochastic = alpha_t * noise_sampler(sigmas[i], sigmas[i + 1]) * effective_s_noise * stochastic_scale * stochastic_gate
+                native_stochastic = (
+                    alpha_t
+                    * noise_sampler(sigmas[i], sigmas[i + 1])
+                    * effective_s_noise
+                    * stochastic_scale
+                )
+                stochastic = native_stochastic * stochastic_gate
                 x = x + stochastic
+                # Spectrum owns the exact post-adaptation increment that was
+                # actually applied to x, not the hypothetical native increment.
                 publish_stochastic_increment(bridge, i, stochastic)
 
             previous_raw = evidence_history.previous_raw
-            if result_is_actual and stochastic is not None and previous_raw is not None:
-                stochastic_streams = layout.split(stochastic)
+            if result_is_actual and native_stochastic is not None and previous_raw is not None:
+                native_streams = layout.split(native_stochastic)
                 movement_streams = layout.split(raw_denoised - previous_raw)
-                evidence_history.previous_stochastic_ratios = {
-                    name: torch.nan_to_num(
-                        rms(stream) / rms(movement_streams[name]).clamp_min(torch.finfo(stream.dtype).eps),
-                        nan=0.0,
-                        posinf=1.0,
-                    ).clamp(0.0, 1.0).detach()
-                    for name, stream in stochastic_streams.items()
-                }
+                ratios: dict[str, torch.Tensor] = {}
+                for name, stream in native_streams.items():
+                    ratio = _stochastic_movement_ratio(stream, movement_streams[name])
+                    if ratio is not None:
+                        ratios[name] = ratio.detach()
+                evidence_history.previous_stochastic_ratios = ratios or None
             else:
                 evidence_history.previous_stochastic_ratios = None
 
@@ -367,6 +397,10 @@ def sample_refdelta_er_sde(
                     "terminal": False,
                     "risk": observation.risk,
                     "stream_risk": observation.stream_risks,
+                    "trajectory_risk": observation.trajectory_risk,
+                    "stream_trajectory_risk": observation.stream_trajectory_risks,
+                    "stochastic_pressure": observation.stochastic_pressure,
+                    "stream_stochastic_pressure": observation.stream_stochastic_pressures,
                     "risk_components": observation.components,
                     "stage2_gate": stage2_gate,
                     "stage3_gate": stage3_gate,
@@ -385,14 +419,41 @@ def sample_refdelta_er_sde(
                     _record_stream_norms(record, "stage2_contribution_rms", stage2 * stage2_gate, layout)
                 if stage3 is not None:
                     _record_stream_norms(record, "stage3_contribution_rms", stage3 * stage3_gate, layout)
-                if stochastic is not None:
+                if native_stochastic is not None and stochastic is not None:
+                    _record_stream_norms(record, "native_stochastic_rms", native_stochastic, layout)
                     _record_stream_norms(record, "stochastic_rms", stochastic, layout)
-                    for name, stream in layout.split(stochastic).items():
-                        latent_stream = layout.split(x)[name]
-                        movement_stream = layout.split(raw_denoised - previous_raw)[name] if previous_raw is not None else raw_denoised.new_zeros(stream.shape)
-                        eps = torch.finfo(stream.dtype).eps
-                        record.setdefault(name, {})["stochastic_to_latent"] = rms(stream) / rms(latent_stream).clamp_min(eps)
-                        record.setdefault(name, {})["stochastic_to_denoised_movement"] = rms(stream) / rms(movement_stream).clamp_min(eps)
+                    native_streams = layout.split(native_stochastic)
+                    applied_streams = layout.split(stochastic)
+                    latent_streams = layout.split(x)
+                    movement_streams = (
+                        layout.split(raw_denoised - previous_raw)
+                        if previous_raw is not None
+                        else None
+                    )
+                    for name, native_stream in native_streams.items():
+                        applied_stream = applied_streams[name]
+                        latent_stream = latent_streams[name]
+                        eps = torch.finfo(native_stream.dtype).eps
+                        values = record.setdefault(name, {})
+                        values["native_stochastic_to_latent"] = (
+                            rms(native_stream) / rms(latent_stream).clamp_min(eps)
+                        )
+                        values["stochastic_to_latent"] = (
+                            rms(applied_stream) / rms(latent_stream).clamp_min(eps)
+                        )
+                        native_ratio = None
+                        applied_ratio = None
+                        if movement_streams is not None:
+                            native_ratio = _stochastic_movement_ratio(
+                                native_stream,
+                                movement_streams[name],
+                            )
+                            applied_ratio = _stochastic_movement_ratio(
+                                applied_stream,
+                                movement_streams[name],
+                            )
+                        values["native_stochastic_to_denoised_movement"] = native_ratio
+                        values["stochastic_to_denoised_movement"] = applied_ratio
                 if reference_denoised is not None:
                     record["reference"] = compare_same_state(x_current, sigmas[i], raw_denoised, reference_denoised, layout)
                 writer.write(record)
