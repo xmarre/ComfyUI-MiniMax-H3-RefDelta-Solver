@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -10,13 +11,14 @@ from typing import Any
 import torch
 from safetensors.torch import load_file, save_file
 
-from .diagnostics import compare_same_state
+from .comparison import compare_fused_to_model, compare_ref_delta
 from .spectrum_interop import spectrum_bridge
 from .telemetry import TelemetryWriter, flatten_record
 from .trajectory import StreamLayout
 
 
-CALIBRATION_SCHEMA_VERSION = 1
+CALIBRATION_SCHEMA_VERSION = 2
+COMPARISON_SCHEMA_VERSION = 1
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
@@ -24,6 +26,13 @@ def safe_calibration_id(value: str) -> str:
     safe = _SAFE_ID.sub("_", str(value)).strip("._")
     if not safe:
         raise ValueError("calibration_id must contain at least one filename-safe character")
+    return safe
+
+
+def safe_comparison_label(value: str) -> str:
+    safe = safe_calibration_id(value).lower()
+    if safe in {"capture", "comparisons"}:
+        raise ValueError(f"reserved comparison_label: {safe}")
     return safe
 
 
@@ -157,7 +166,7 @@ class CalibrationCaptureWriter:
 
 
 class CalibrationReplay:
-    """Read one completed capture and evaluate a reference model on its exact states."""
+    """Read one completed fused capture and its labeled comparison passes."""
 
     def __init__(
         self,
@@ -201,6 +210,12 @@ class CalibrationReplay:
             raise RuntimeError("RefDelta calibration capture has invalid actual-step metadata")
         self.records: list[dict[str, Any]] = records
         self.actual: list[bool] = [bool(value) for value in actual]
+        self.steps = int(steps)
+        self.shape = tuple(int(value) for value in shape)
+        self.capture_fingerprint = hashlib.sha256(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        self._comparison_manifests: dict[str, dict[str, Any]] = {}
         video_elements = manifest.get("video_elements")
         self.layout = StreamLayout(None if video_elements is None else int(video_elements))
 
@@ -223,9 +238,135 @@ class CalibrationReplay:
             raise RuntimeError("RefDelta calibration final file does not contain sample")
         return sample.to(device)
 
+    def comparison_manifest(self, comparison_label: str) -> dict[str, Any]:
+        label = safe_comparison_label(comparison_label)
+        cached = self._comparison_manifests.get(label)
+        if cached is not None:
+            return cached
+        path = self.directory / "comparisons" / label / "manifest.json"
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"completed RefDelta comparison pass '{label}' not found: {path}"
+            )
+        with path.open("r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        if (
+            manifest.get("schema_version") != COMPARISON_SCHEMA_VERSION
+            or not manifest.get("complete")
+        ):
+            raise RuntimeError(
+                f"RefDelta comparison pass '{label}' is incomplete or uses an unsupported schema"
+            )
+        if manifest.get("comparison_label") != label:
+            raise RuntimeError(f"RefDelta comparison manifest label mismatch for '{label}'")
+        if manifest.get("capture_fingerprint") != self.capture_fingerprint:
+            raise RuntimeError(f"RefDelta comparison pass '{label}' belongs to another capture")
+        if manifest.get("invocation_key") != self.key or int(manifest.get("steps", -1)) != self.steps:
+            raise RuntimeError(f"RefDelta comparison pass '{label}' invocation metadata is stale")
+        if manifest.get("actual_model_evaluations") != self.actual:
+            raise RuntimeError(f"RefDelta comparison pass '{label}' actual-step metadata is stale")
+        self._comparison_manifests[label] = manifest
+        return manifest
+
+    def load_comparison_step(
+        self,
+        comparison_label: str,
+        step: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        label = safe_comparison_label(comparison_label)
+        self.comparison_manifest(label)
+        if not self.actual[int(step)]:
+            raise ValueError(f"comparison output requested for non-actual capture step {step}")
+        path = self.directory / "comparisons" / label / f"step-{int(step):04d}.safetensors"
+        if not path.is_file():
+            raise FileNotFoundError(f"RefDelta comparison pass '{label}' is missing {path.name}")
+        tensors = load_file(str(path), device="cpu")
+        if set(tensors) != {"comparison_x0"}:
+            raise RuntimeError(f"RefDelta comparison step file has unexpected tensors: {path}")
+        value = tensors["comparison_x0"]
+        if tuple(value.shape) != self.shape:
+            raise RuntimeError(f"RefDelta comparison step shape is stale: {path}")
+        return value.to(device)
+
+
+class ComparisonPassWriter:
+    """Persist one labeled comparison pass without retaining per-step x0 tensors."""
+
+    def __init__(self, replay: CalibrationReplay, comparison_label: str) -> None:
+        self.replay = replay
+        self.label = safe_comparison_label(comparison_label)
+        self.directory = replay.directory / "comparisons" / self.label
+        if self.directory.exists():
+            if (self.directory / "manifest.json").is_file():
+                raise FileExistsError(
+                    f"completed RefDelta comparison pass '{self.label}' already exists for "
+                    f"{replay.key}; choose another comparison_label or calibration_id"
+                )
+            shutil.rmtree(self.directory)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self._records: list[dict[str, Any] | None] = [None] * replay.steps
+        self._written: list[bool] = [False] * replay.steps
+        self._closed = False
+
+    def write_step(
+        self,
+        step: int,
+        comparison_x0: torch.Tensor,
+        record: dict[str, Any],
+    ) -> None:
+        if self._closed:
+            raise RuntimeError("comparison pass is already closed")
+        step = int(step)
+        if not 0 <= step < self.replay.steps or not self.replay.actual[step]:
+            raise ValueError("comparison output can only be written for captured actual steps")
+        if tuple(comparison_x0.shape) != self.replay.shape:
+            raise ValueError("comparison output shape does not match the fused capture")
+        _atomic_safetensors(
+            self.directory / f"step-{step:04d}.safetensors",
+            {"comparison_x0": comparison_x0},
+        )
+        self._written[step] = True
+        self._records[step] = flatten_record(record)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        missing = [
+            step
+            for step, expected in enumerate(self.replay.actual)
+            if expected and not self._written[step]
+        ]
+        if missing:
+            raise RuntimeError(f"incomplete comparison pass: missing actual steps={missing}")
+        _atomic_json(
+            self.directory / "manifest.json",
+            {
+                "schema_version": COMPARISON_SCHEMA_VERSION,
+                "complete": True,
+                "comparison_label": self.label,
+                "capture_fingerprint": self.replay.capture_fingerprint,
+                "invocation_key": self.replay.key,
+                "steps": self.replay.steps,
+                "shape": list(self.replay.shape),
+                "actual_model_evaluations": self.replay.actual,
+                "records": self._records,
+            },
+        )
+        self._closed = True
+
+    def abort(self) -> None:
+        if self._closed:
+            return
+        (self.directory / "INCOMPLETE").write_text(
+            "Comparison sampler invocation did not complete; this pass is not reusable.\n",
+            encoding="utf-8",
+        )
+        self._closed = True
+
 
 @torch.no_grad()
-def sample_refdelta_reference_replay(
+def sample_refdelta_comparison_replay(
     model,
     x,
     sigmas,
@@ -234,9 +375,10 @@ def sample_refdelta_reference_replay(
     disable=None,
     *,
     calibration_id: str,
-    telemetry_prefix: str = "refdelta_reference_replay",
+    comparison_label: str,
+    telemetry_prefix: str = "refdelta_comparison_replay",
 ):
-    """Evaluate the current MODEL on states captured from a previous fused run.
+    """Evaluate one labeled MODEL on states captured from a previous fused run.
 
     The captured fused final sampler value is returned unchanged so Continuum's
     later chunks are conditioned on the original fused trajectory rather than a
@@ -244,9 +386,10 @@ def sample_refdelta_reference_replay(
     """
     del disable
     extra_args = {} if extra_args is None else extra_args
+    comparison_label = safe_comparison_label(comparison_label)
     if spectrum_bridge(extra_args) is not None:
         raise RuntimeError(
-            "RefDelta Reference Replay requires Spectrum to be disabled on the reference run"
+            "RefDelta Comparison Replay requires Spectrum to be disabled on the comparison run"
         )
 
     from comfy.k_diffusion import sampling as k_sampling
@@ -264,32 +407,56 @@ def sample_refdelta_reference_replay(
         tuple(x.shape),
         sigmas,
     )
+    if comparison_label == "ref2va":
+        # Ref2VA-from-FL2VA decomposition is only meaningful against the exact
+        # FL2VA pass belonging to this immutable fused capture.
+        replay.comparison_manifest("fl2va")
+    comparison_writer = ComparisonPassWriter(replay, comparison_label)
     writer = TelemetryWriter(
         Path(folder_paths.get_output_directory()) / "refdelta_telemetry",
-        telemetry_prefix,
+        f"{telemetry_prefix}-{comparison_label}",
         seed,
     )
     s_in = x.new_ones([x.shape[0]])
-    reference_evaluations = 0
-    all_reference_identical = True
+    comparison_evaluations = 0
+    all_comparison_identical = True
+    completed = False
     try:
         for step in range(steps):
             state, fused_x0 = replay.load_step(step, x.device)
             baseline = dict(replay.records[step])
-            baseline["replay_reference_evaluated"] = replay.actual[step]
+            baseline["comparison_label"] = comparison_label
+            baseline["comparison_model_evaluated"] = replay.actual[step]
             if replay.actual[step]:
-                reference_x0 = model(state, sigmas[step] * s_in, **extra_args)
-                reference_evaluations += 1
-                all_reference_identical = all_reference_identical and torch.equal(
-                    reference_x0,
+                comparison_x0 = model(state, sigmas[step] * s_in, **extra_args)
+                comparison_evaluations += 1
+                all_comparison_identical = all_comparison_identical and torch.equal(
+                    comparison_x0,
                     fused_x0,
                 )
-                baseline["reference"] = compare_same_state(
+                comparison_metrics = compare_fused_to_model(
                     state,
                     sigmas[step],
                     fused_x0,
-                    reference_x0,
+                    comparison_x0,
                     replay.layout,
+                )
+                baseline["comparison"] = {comparison_label: comparison_metrics}
+                if comparison_label == "ref2va":
+                    fl2va_x0 = replay.load_comparison_step("fl2va", step, x.device)
+                    baseline["ref_delta"] = compare_ref_delta(
+                        fused_x0,
+                        fl2va_x0,
+                        comparison_x0,
+                        replay.layout,
+                    )
+                comparison_writer.write_step(
+                    step,
+                    comparison_x0,
+                    {
+                        "comparison": {comparison_label: comparison_metrics},
+                        "ref_delta": baseline.get("ref_delta", {}),
+                    },
                 )
                 if callback is not None:
                     callback(
@@ -298,7 +465,7 @@ def sample_refdelta_reference_replay(
                             "i": step,
                             "sigma": sigmas[step],
                             "sigma_hat": sigmas[step],
-                            "denoised": reference_x0,
+                            "denoised": comparison_x0,
                         }
                     )
             elif callback is not None:
@@ -312,23 +479,37 @@ def sample_refdelta_reference_replay(
                     }
                 )
             writer.write(baseline)
-        if reference_evaluations == 0:
+        if comparison_evaluations == 0:
             raise RuntimeError("RefDelta calibration capture contains no actual model evaluations")
-        if all_reference_identical:
+        if all_comparison_identical:
             raise ValueError(
-                "RefDelta Reference Replay was bit-identical to the fused capture at every actual step; "
-                "verify that the existing MODEL loader was switched to genuine Ref2VA"
+                f"RefDelta comparison '{comparison_label}' was bit-identical to the fused capture "
+                "at every actual step; verify that the existing MODEL loader was switched"
             )
+        writer.close()
+        comparison_writer.close()
+        completed = True
         return replay.load_final(x.device)
     finally:
-        writer.close()
+        if not completed:
+            comparison_writer.abort()
+
+
+def sample_refdelta_reference_replay(*args, **kwargs):
+    """Deprecated saved-workflow alias for a labeled Ref2VA comparison pass."""
+    kwargs.setdefault("comparison_label", "ref2va")
+    return sample_refdelta_comparison_replay(*args, **kwargs)
 
 
 __all__ = [
     "CALIBRATION_SCHEMA_VERSION",
+    "COMPARISON_SCHEMA_VERSION",
     "CalibrationCaptureWriter",
     "CalibrationReplay",
+    "ComparisonPassWriter",
     "invocation_key",
     "safe_calibration_id",
+    "safe_comparison_label",
+    "sample_refdelta_comparison_replay",
     "sample_refdelta_reference_replay",
 ]

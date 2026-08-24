@@ -31,10 +31,10 @@ Repository = "https://github.com/xmarre/ComfyUI-MiniMax-H3-RefDelta-Solver"
 PublisherId = "xmarre"
 DisplayName = "MiniMax H3 RefDelta Solver"
 Icon = ""
-includes = ["__init__.py", "nodes.py", "comfyui_refdelta_solver", "LICENSE", "README.md"]
+includes = ["__init__.py", "nodes.py", "comfyui_refdelta_solver", "tools", "LICENSE", "README.md", "RELEASE_NOTES.md"]
 
 [tool.setuptools.packages.find]
-include = ["comfyui_refdelta_solver*"]
+include = ["comfyui_refdelta_solver*", "tools*"]
 
 [tool.setuptools.package-data]
 comfyui_refdelta_solver = ["profiles/*.json"]

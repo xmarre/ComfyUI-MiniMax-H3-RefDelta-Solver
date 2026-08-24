@@ -6,18 +6,11 @@ import json
 import math
 from pathlib import Path
 from statistics import median
+from typing import Any
 
 
-REFERENCE_FIELDS = (
-    "reference_video_x0_relative_error",
-    "reference_video_velocity_relative_error",
-    "reference_audio_x0_relative_error",
-    "reference_audio_velocity_relative_error",
-)
-
-
-def read_records(paths: list[Path]) -> list[dict[str, float | str]]:
-    records: list[dict[str, float | str]] = []
+def read_records(paths: list[Path]) -> list[dict[str, float | str | bool | None]]:
+    records: list[dict[str, float | str | bool | None]] = []
     for path in paths:
         if path.suffix.lower() == ".jsonl":
             with path.open("r", encoding="utf-8") as handle:
@@ -28,9 +21,12 @@ def read_records(paths: list[Path]) -> list[dict[str, float | str]]:
         else:
             raise ValueError(f"unsupported telemetry format: {path}")
         for row in rows:
-            parsed: dict[str, float | str] = {}
+            parsed: dict[str, float | str | bool | None] = {}
             for key, value in row.items():
                 if value in (None, ""):
+                    continue
+                if isinstance(value, bool):
+                    parsed[key] = value
                     continue
                 try:
                     parsed[key] = float(value)
@@ -40,8 +36,23 @@ def read_records(paths: list[Path]) -> list[dict[str, float | str]]:
     return records
 
 
-def bin_records(records: list[dict[str, float | str]], bins: int, require_reference: bool) -> list[dict[str, float]]:
-    grouped: list[list[dict[str, float | str]]] = [[] for _ in range(bins)]
+def _finite_values(record: dict[str, Any], predicate) -> list[float]:
+    return [
+        float(value)
+        for key, value in record.items()
+        if predicate(key) and isinstance(value, float) and math.isfinite(value)
+    ]
+
+
+def _row_max(record: dict[str, Any], predicate) -> float:
+    values = _finite_values(record, predicate)
+    return max(values) if values else 0.0
+
+
+def bin_stability_records(records: list[dict[str, Any]], bins: int) -> list[dict[str, float]]:
+    if bins < 1:
+        raise ValueError("bins must be positive")
+    grouped: list[list[dict[str, Any]]] = [[] for _ in range(bins)]
     for record in records:
         sigma = record.get("sigma")
         if not isinstance(sigma, float) or not math.isfinite(sigma):
@@ -51,87 +62,203 @@ def bin_records(records: list[dict[str, float | str]], bins: int, require_refere
         span = sigma_max - sigma_min
         progress = 1.0 - sigma if span <= 0.0 else (sigma_max - sigma) / span
         progress = min(1.0, max(0.0, progress))
-        index = min(bins - 1, int(progress * bins))
-        grouped[index].append(record)
+        grouped[min(bins - 1, int(progress * bins))].append(record)
 
-    result: list[dict[str, float]] = []
+    points: list[dict[str, float]] = []
     for index, rows in enumerate(grouped):
         if not rows:
             continue
-        reference_values = [
-            max(float(row[field]) for field in REFERENCE_FIELDS if isinstance(row.get(field), float))
+        trajectory = [
+            _row_max(row, lambda key: "trajectory_risk" in key and not key.startswith("comparison_"))
             for row in rows
-            if any(isinstance(row.get(field), float) for field in REFERENCE_FIELDS)
         ]
-        if require_reference and not reference_values:
-            continue
-        curvature_values = [
-            max(float(value) for key, value in row.items() if key.endswith("_curvature") and isinstance(value, float))
+        curvature = [_row_max(row, lambda key: key.endswith("_curvature")) for row in rows]
+        extrapolation = [
+            _row_max(row, lambda key: key.endswith("_extrapolation_error"))
             for row in rows
-            if any(key.endswith("_curvature") and isinstance(value, float) for key, value in row.items())
         ]
-        result.append({
-            "progress": (index + 0.5) / bins,
-            "error": median(reference_values) if reference_values else 0.0,
-            "curvature": median(curvature_values) if curvature_values else 0.0,
-            "samples": float(len(rows)),
-        })
-    return result
+        stochastic = [
+            _row_max(
+                row,
+                lambda key: "stochastic_pressure" in key and not key.startswith("comparison_"),
+            )
+            for row in rows
+        ]
+        points.append(
+            {
+                "progress": (index + 0.5) / bins,
+                "trajectory_risk": median(trajectory),
+                "curvature": median(curvature),
+                "extrapolation_error": median(extrapolation),
+                "stochastic_pressure": median(stochastic),
+                "samples": float(len(rows)),
+            }
+        )
+    return points
 
 
-def build_density(points: list[dict[str, float]], alpha: float, beta: float, gamma: float) -> list[dict[str, float]]:
+def aggregate_comparison_diagnostics(records: list[dict[str, Any]]) -> dict[str, float]:
+    fields = sorted(
+        {
+            key
+            for record in records
+            for key, value in record.items()
+            if key.startswith(("comparison_", "ref_delta_"))
+            and isinstance(value, float)
+            and math.isfinite(value)
+        }
+    )
+    return {
+        key: median(
+            float(record[key])
+            for record in records
+            if isinstance(record.get(key), float) and math.isfinite(float(record[key]))
+        )
+        for key in fields
+    }
+
+
+def build_stability_density(
+    points: list[dict[str, float]],
+    *,
+    trajectory_weight: float,
+    curvature_weight: float,
+    extrapolation_weight: float,
+    stochastic_pressure_weight: float,
+    instability_slope_weight: float,
+) -> list[dict[str, float]]:
     if len(points) < 4:
-        raise ValueError("calibration needs at least four populated trajectory bins")
-    errors = [point["error"] for point in points]
-    slopes = []
-    for index, point in enumerate(points):
+        raise ValueError("experimental stability density needs at least four populated trajectory bins")
+    if any(
+        value < 0.0
+        for value in (
+            trajectory_weight,
+            curvature_weight,
+            extrapolation_weight,
+            stochastic_pressure_weight,
+            instability_slope_weight,
+        )
+    ):
+        raise ValueError("stability-density weights must be non-negative")
+    instability = [
+        trajectory_weight * point["trajectory_risk"]
+        + curvature_weight * point["curvature"]
+        + extrapolation_weight * point["extrapolation_error"]
+        + stochastic_pressure_weight * point["stochastic_pressure"]
+        for point in points
+    ]
+    slopes: list[float] = []
+    for index in range(len(points)):
         left = max(0, index - 1)
         right = min(len(points) - 1, index + 1)
         span = points[right]["progress"] - points[left]["progress"]
-        slopes.append(0.0 if span == 0.0 else abs(errors[right] - errors[left]) / span)
+        slopes.append(
+            0.0 if span == 0.0 else abs(instability[right] - instability[left]) / span
+        )
     raw = [
-        1.0 + alpha * point["error"] + beta * slope + gamma * point["curvature"]
-        for point, slope in zip(points, slopes)
+        1.0 + value + instability_slope_weight * slope
+        for value, slope in zip(instability, slopes)
     ]
     mean = sum(raw) / len(raw)
     density = [min(4.0, max(0.25, value / mean)) for value in raw]
     output = [{"progress": 0.0, "difficulty": density[0]}]
-    output.extend({"progress": point["progress"], "difficulty": value} for point, value in zip(points, density))
+    output.extend(
+        {"progress": point["progress"], "difficulty": value}
+        for point, value in zip(points, density)
+    )
     output.append({"progress": 1.0, "difficulty": density[-1]})
     return output
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Build a RefDelta scheduler profile from scalar trajectory telemetry.")
-    parser.add_argument("inputs", nargs="+", type=Path)
-    parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--id", default="r1024_calibrated")
-    parser.add_argument("--bins", type=int, default=32)
-    parser.add_argument("--alpha", type=float, default=1.0, help="Reference-error density weight")
-    parser.add_argument("--beta", type=float, default=0.25, help="Error-slope density weight")
-    parser.add_argument("--gamma", type=float, default=0.25, help="Trajectory-curvature density weight")
-    parser.add_argument("--allow-no-reference", action="store_true")
-    args = parser.parse_args()
-
-    records = read_records(args.inputs)
-    points = bin_records(records, args.bins, require_reference=not args.allow_no_reference)
-    density = build_density(points, args.alpha, args.beta, args.gamma)
-    profile = {
+def build_profile(
+    records: list[dict[str, Any]],
+    *,
+    profile_id: str,
+    bins: int,
+    experimental_stability_density: bool,
+    weights: dict[str, float],
+    input_files: list[str] | None = None,
+) -> dict[str, Any]:
+    points = bin_stability_records(records, bins)
+    if not points:
+        raise ValueError("no finite sigma-bearing telemetry records were found")
+    if experimental_stability_density:
+        density = build_stability_density(
+            points,
+            trajectory_weight=weights["trajectory_risk"],
+            curvature_weight=weights["curvature"],
+            extrapolation_weight=weights["extrapolation_error"],
+            stochastic_pressure_weight=weights["stochastic_pressure"],
+            instability_slope_weight=weights["instability_slope"],
+        )
+        status = "trajectory-stability-experimental"
+    else:
+        density = [
+            {"progress": 0.0, "difficulty": 1.0},
+            {"progress": 1.0, "difficulty": 1.0},
+        ]
+        status = "provisional-neutral"
+    return {
         "version": 1,
-        "id": args.id,
+        "id": profile_id,
         "model_family": "MiniMax-H3 Pruned Ref-Delta Fused",
         "rank": 1024,
-        "status": "calibrated" if not args.allow_no_reference else "trajectory-only-experimental",
+        "status": status,
         "domain": "video-sigma-progress-over-beta-prior",
         "points": density,
         "metadata": {
-            "input_files": [str(path) for path in args.inputs],
+            "input_files": input_files or [],
             "input_records": len(records),
             "populated_bins": len(points),
-            "weights": {"model_error": args.alpha, "error_derivative": args.beta, "trajectory_curvature": args.gamma},
+            "density_source": (
+                "production_trajectory_stability"
+                if experimental_stability_density
+                else "neutral_pending_held_out_validation"
+            ),
+            "weights": weights if experimental_stability_density else {},
+            "binned_production_stability": points,
+            "comparison_diagnostics": aggregate_comparison_diagnostics(records),
+            "comparison_metrics_used_for_density": False,
             "base_scheduler": {"name": "beta", "alpha": 0.6, "beta": 0.6},
         },
     }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Aggregate RefDelta production-stability and comparison telemetry. "
+            "The emitted scheduler remains neutral unless the explicit experimental flag is set."
+        )
+    )
+    parser.add_argument("inputs", nargs="+", type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--id", default="r1024_provisional_from_telemetry")
+    parser.add_argument("--bins", type=int, default=32)
+    parser.add_argument("--experimental-stability-density", action="store_true")
+    parser.add_argument("--trajectory-weight", type=float, default=1.0)
+    parser.add_argument("--curvature-weight", type=float, default=0.25)
+    parser.add_argument("--extrapolation-weight", type=float, default=0.25)
+    parser.add_argument("--stochastic-pressure-weight", type=float, default=0.0)
+    parser.add_argument("--instability-slope-weight", type=float, default=0.25)
+    args = parser.parse_args()
+
+    records = read_records(args.inputs)
+    weights = {
+        "trajectory_risk": args.trajectory_weight,
+        "curvature": args.curvature_weight,
+        "extrapolation_error": args.extrapolation_weight,
+        "stochastic_pressure": args.stochastic_pressure_weight,
+        "instability_slope": args.instability_slope_weight,
+    }
+    profile = build_profile(
+        records,
+        profile_id=args.id,
+        bins=args.bins,
+        experimental_stability_density=args.experimental_stability_density,
+        weights=weights,
+        input_files=[str(path) for path in args.inputs],
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 

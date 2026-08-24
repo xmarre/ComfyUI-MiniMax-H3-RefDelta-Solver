@@ -5,7 +5,13 @@ A dedicated ER-SDE-derived sampler and beta-prior scheduler for the
 
 This project targets a specific numerical problem: the fused checkpoint can make useful final predictions while its intermediate denoised trajectory differs from ordinary H3. The sampler measures that trajectory in ER-SDE's real solver coordinate and smoothly reduces history-dependent corrections when the local anchors become unreliable. It preserves ComfyUI's `ModelSamplingAV`, packed audio/video latent, model-output conversion, and H3 conditioning path.
 
-> **Calibration status:** the sampler controls and bundled `r1024_provisional` scheduler profile are experimental. The profile deliberately has neutral error weights until matched same-state fused/Ref2VA telemetry is collected. Neutral means the scheduler remains a continuous-table counterpart of ComfyUI's beta(0.6, 0.6) prior. No unmeasured AdaLN heuristic is presented as a calibrated quality improvement.
+The target checkpoint is conceptually FL2VA plus a rank-1024 approximation of the
+Ref2VA-from-FL2VA parameter delta, with exact/non-matrix delta pieces where applicable.
+The production checkpoint also contains INT8 ConvRot approximation effects. Genuine
+Ref2VA is therefore a labeled comparison model for measuring the imported delta. It is
+not a quality oracle, and distance from Ref2VA is not interpreted as quality loss.
+
+> **Calibration status:** the sampler controls and bundled `r1024_provisional` scheduler profile are experimental. The profile remains a neutral continuous-table counterpart of ComfyUI's beta(0.6, 0.6) prior. Comparison telemetry is explanatory. Scheduler density stays neutral until production-trajectory evidence and held-out media tests justify explicit stability weights.
 
 ## Install
 
@@ -50,11 +56,11 @@ calibration_capture = false
 
 That configuration delegates directly to ComfyUI's native `sample_er_sde`; it does not maintain a second approximation of the baseline.
 
-### MiniMax H3 RefDelta Reference Replay
+### MiniMax H3 RefDelta Comparison Replay
 
-This is the preferred same-state calibration path. It deliberately avoids a graph containing two full H3 MODELs and never requires fused and genuine Ref2VA weights to be resident during the same sampler invocation.
+This is the preferred same-state measurement path. One fused capture supports multiple labeled model passes. Each execution loads one full H3 MODEL.
 
-Calibration is two separate executions of the **same workflow**.
+The intended sequence uses three separate executions of the **same workflow**.
 
 #### Pass 1 — capture the fused trajectory
 
@@ -78,13 +84,37 @@ ComfyUI/output/refdelta_calibration/<calibration_id>/
 
 The tensors are written per-step as safetensors instead of being retained for the whole generation in CPU/GPU memory. A completed invocation also stores the exact pre-`inverse_noise_scaling` final sampler tensor and a manifest containing the seed, shape, sigma schedule, actual/forecast classification, and flattened baseline telemetry. Interrupted captures are explicitly marked incomplete and cannot be replayed.
 
-#### Pass 2 — replay with genuine Ref2VA
+#### Pass 2 — replay with FL2VA
 
-Do **not** duplicate the model path. Use the same workflow and change the existing source MODEL loader from the fused/INT8 ConvRot checkpoint to genuine Ref2VA. This automatically reuses the same downstream deterministic patch chain instead of constructing a second copy of it.
+Stop ComfyUI after capture when explicit model-lifetime isolation is desired. Restart it,
+open the same workflow, and change the existing source MODEL loader from the fused INT8
+ConvRot checkpoint to FL2VA. Keep the downstream deterministic patch chain unchanged.
 
-For the strongest memory isolation, **stop ComfyUI completely after pass 1 and restart it before pass 2**. The capture is entirely disk-backed, so replay survives a process restart. This guarantees that the fused transformer cannot remain resident or cached in the same process when genuine Ref2VA is loaded.
+Replace the normal sampler in the same `SAMPLER` socket with `MiniMax H3 RefDelta
+Comparison Replay`. Enter the same `calibration_id` and set:
 
-Replace the normal RefDelta sampler in the same `SAMPLER` socket with `MiniMax H3 RefDelta Reference Replay` and enter the same `calibration_id`.
+```text
+comparison_label = fl2va
+```
+
+The pass stores FL2VA x0 step-by-step under the immutable capture invocation:
+
+```text
+.../<invocation_key>/comparisons/fl2va/
+```
+
+#### Pass 3 — replay with genuine Ref2VA
+
+Stop/restart ComfyUI again when desired, switch the same loader to genuine Ref2VA, keep
+Comparison Replay in the same socket, and set:
+
+```text
+comparison_label = ref2va
+```
+
+The completed FL2VA pass is required for this label. Ref2VA replay loads one stored FL2VA
+x0 at a time and combines it with the captured fused x0 and the current Ref2VA x0. No
+model chain is duplicated, and no execution loads fused, FL2VA, and Ref2VA together.
 
 Keep the same:
 
@@ -97,23 +127,24 @@ Keep the same:
 
 For a clean first calibration, keep Spectrum off and disable/bypass downstream FaceRefine or other sampler-2 paths that reuse the same sampler. With Continuum Run Storage, force the chunks to execute rather than reusing stored results.
 
-The replay sampler ignores the newly generated reference trajectory. At every captured actual step it evaluates genuine Ref2VA on the **captured fused state and captured sigma**, computes same-state x0/velocity metrics, and writes merged telemetry under `ComfyUI/output/refdelta_telemetry/`.
+The replay sampler evaluates the current labeled model on each **captured fused state and captured sigma**. It stores comparison x0 immediately as per-step safetensors and writes scalar telemetry under `ComfyUI/output/refdelta_telemetry/`. Completed labels are immutable; interrupted labels are incomplete and safely replaceable.
 
-After the reference evaluations for one invocation, replay returns the captured fused final sampler tensor rather than the Ref2VA result. Therefore Continuum chunk N+1 is constructed from the exact original fused chunk-N result. A multi-chunk replay cannot drift into a different reference-generated continuation trajectory.
+After each comparison invocation, replay returns the captured fused final sampler tensor at the exact pre-`inverse_noise_scaling` boundary used by the original custom sampler. ComfyUI applies its normal inverse scaling once. Continuum chunk N+1 is therefore constructed from the exact original fused chunk-N result for every comparison pass.
 
 Only one H3 MODEL is connected for each execution. A full ComfyUI restart between passes is recommended for calibration on large H3 checkpoints because it provides an explicit model-lifetime boundary rather than relying on cache/offload heuristics.
 
-The replay telemetry includes:
+The labeled telemetry includes:
 
-- video/audio x0 cosine and relative error;
-- video/audio velocity cosine and relative error;
+- `comparison_fl2va_*` and `comparison_ref2va_*` same-state x0/velocity metrics;
+- `ref_delta_*` video/audio decomposition of `Ref2VA - FL2VA` against `fused - FL2VA`;
+- delta cosine, magnitude ratio, relative residual, projection fraction, orthogonal residual, and absolute RMS values;
 - the complete baseline trajectory/risk/stochastic fields captured in pass 1.
 
-This makes the replay JSONL/CSV directly usable by the existing profile-building tools.
+Normalized delta fields are `null` with an explicit `*_defined = false` when the true Ref2VA-from-FL2VA delta is zero/subnormal. Cross-pass comparison manifests carry a capture fingerprint, schema version, invocation identity, and actual-step map, preventing stale results from being combined.
 
 ### Legacy simultaneous reference guider
 
-`[Legacy] MiniMax H3 RefDelta Reference Guider` remains registered only for saved-workflow compatibility. It evaluates fused and reference models in the same sampling call and may require both full H3 models to be resident. It is **not** the recommended calibration path.
+`[Legacy] MiniMax H3 RefDelta Reference Replay` and `[Legacy] MiniMax H3 RefDelta Reference Guider` remain registered for saved-workflow compatibility. The legacy replay maps to the `ref2va` label and therefore requires a completed `fl2va` pass. The legacy guider evaluates two models in one call and may require both transformers to be resident.
 
 ### MiniMax H3 RefDelta Scheduler
 
@@ -143,22 +174,34 @@ Risk/stochastic telemetry distinguishes:
 
 A stochastic/movement ratio is `null` when no meaningful prior denoised movement exists, including the first step and exactly frozen/protected streams. This prevents epsilon-division artifacts from being mistaken for calibration evidence without discarding small legitimate BF16 movement.
 
-Build a profile from multiple representative reference-replay files:
+Aggregate multiple representative comparison-replay files into a neutral provisional profile and an embedded diagnostics report:
 
 ```bash
 python tools/build_profile.py \
   ComfyUI/output/refdelta_telemetry/*.csv \
-  --output comfyui_refdelta_solver/profiles/r1024_calibrated.json \
-  --id r1024_calibrated
+  --output comfyui_refdelta_solver/profiles/r1024_provisional_from_telemetry.json \
+  --id r1024_provisional_from_telemetry
 ```
 
-The builder bins normalized video-sigma progress and uses robust per-bin reference error, its local slope, and observed trajectory curvature. Inspect the result and validate it on held-out prompts/seeds before adding it as a default. A trajectory-only profile requires the explicit `--allow-no-reference` flag and remains experimental.
+The default output keeps every scheduler difficulty point at `1.0`. It aggregates production trajectory risk, curvature, extrapolation error, stochastic pressure, and labeled comparison/delta diagnostics into metadata. FL2VA/Ref2VA distances never feed scheduler density.
+
+An explicitly experimental production-stability density can be generated with:
+
+```bash
+python tools/build_profile.py \
+  ComfyUI/output/refdelta_telemetry/*.csv \
+  --output /tmp/r1024_stability_experimental.json \
+  --id r1024_stability_experimental \
+  --experimental-stability-density
+```
+
+Its weights are recorded in profile metadata, its status remains `trajectory-stability-experimental`, and it requires held-out media validation before production use.
 
 Useful analysis tools:
 
 ```bash
 python tools/compare_runs.py run-a.csv run-b.csv
-python tools/analyze_adaln_curve.py model.safetensors telemetry.csv
+python tools/analyze_adaln_curve.py model.safetensors telemetry.csv --metric trajectory_risk
 ```
 
 `analyze_adaln_curve.py` only reports correlation; AdaLN curvature is not used by the sampler or scheduler without measured evidence.
@@ -181,7 +224,7 @@ For a defensible production profile, collect at least:
 
 1. several prompt/reference cases spanning motion, texture, speech/music, and quiet audio;
 2. multiple seeds per case at the intended step count and CFG;
-3. fused calibration captures plus genuine Ref2VA replay telemetry;
+3. one fused INT8 ConvRot capture per run, followed by labeled FL2VA and Ref2VA replay passes;
 4. held-out A/B runs for the resulting scheduler and sampler settings;
 5. interruption/restart and changed latent-shape checks on the real GPU workflow.
 
@@ -198,7 +241,7 @@ The integration uses a fail-closed API-v1 contract:
 - Native-equivalence mode continues to delegate to ComfyUI's reviewed `sample_er_sde` and uses Spectrum's native ER-SDE tracking path.
 - A missing, stale, or mismatched bridge fails explicitly; Spectrum rejects unreviewed RefDelta versions before forecasting.
 
-Calibration capture records Spectrum's actual/forecast classification. Reference replay evaluates only the captured actual steps. For initial calibration, Spectrum off is still recommended so the first dataset measures the underlying fused vector field without forecast substitutions.
+Calibration capture records Spectrum's actual/forecast classification. Comparison replay evaluates only captured actual steps and rejects Spectrum on the comparison pass. Spectrum-off capture is recommended for the first dataset so it measures the underlying fused vector field without forecast substitutions.
 
 ## Development
 

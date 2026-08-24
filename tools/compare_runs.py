@@ -4,7 +4,10 @@ import argparse
 from pathlib import Path
 from statistics import mean
 
-from build_profile import read_records
+try:
+    from .build_profile import read_records
+except ImportError:  # Direct ``python tools/compare_runs.py`` execution.
+    from build_profile import read_records
 
 
 FIELDS = (
@@ -13,8 +16,6 @@ FIELDS = (
     "stochastic_multiplier",
     "video_correction_norm",
     "audio_correction_norm",
-    "reference_video_x0_relative_error",
-    "reference_audio_x0_relative_error",
 )
 
 
@@ -25,7 +26,16 @@ def main() -> None:
     for path in args.inputs:
         records = read_records([path])
         values = []
-        for field in FIELDS:
+        diagnostic_fields = sorted(
+            {
+                key
+                for row in records
+                for key, value in row.items()
+                if key.startswith(("comparison_", "ref_delta_"))
+                and isinstance(value, float)
+            }
+        )
+        for field in (*FIELDS, *diagnostic_fields):
             present = [float(row[field]) for row in records if isinstance(row.get(field), float)]
             if present:
                 values.append(f"{field}={mean(present):.6g}")

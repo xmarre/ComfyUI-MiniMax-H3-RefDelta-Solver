@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from .calibration_replay import sample_refdelta_reference_replay
+from .calibration_replay import (
+    sample_refdelta_comparison_replay,
+    sample_refdelta_reference_replay,
+)
 from .config import RefDeltaSamplerConfig
 from .diagnostics import RefDeltaReferenceGuiderMixin
 from .sampler import sample_refdelta_er_sde
@@ -80,8 +83,45 @@ class MiniMaxH3RefDeltaSampler:
         ),)
 
 
+class MiniMaxH3RefDeltaComparisonReplaySampler:
+    """Evaluate one labeled MODEL against states captured by the fused sampler."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "calibration_id": ("STRING", {"default": "refdelta_calibration"}),
+                "comparison_label": ("STRING", {"default": "fl2va"}),
+                "telemetry_prefix": ("STRING", {"default": "refdelta_comparison_replay", "advanced": True}),
+            }
+        }
+
+    RETURN_TYPES = ("SAMPLER",)
+    RETURN_NAMES = ("sampler",)
+    FUNCTION = "build"
+    CATEGORY = "sampling/custom_sampling/samplers"
+    DESCRIPTION = (
+        "Disk-backed comparison sampler. Replays exact captured fused states through the currently "
+        "loaded labeled MODEL and returns the captured fused final latent so continuation stays exact."
+    )
+
+    def build(self, calibration_id, comparison_label, telemetry_prefix):
+        import comfy.samplers
+
+        return (comfy.samplers.KSAMPLER(
+            sample_refdelta_comparison_replay,
+            extra_options={
+                "calibration_id": calibration_id,
+                "comparison_label": comparison_label,
+                "telemetry_prefix": telemetry_prefix,
+            },
+        ),)
+
+
 class MiniMaxH3RefDeltaReferenceReplaySampler:
-    """Evaluate one reference MODEL against states captured by the fused sampler."""
+    """Deprecated saved-workflow alias for a Ref2VA-labeled comparison pass."""
+
+    DEPRECATED = True
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -96,10 +136,7 @@ class MiniMaxH3RefDeltaReferenceReplaySampler:
     RETURN_NAMES = ("sampler",)
     FUNCTION = "build"
     CATEGORY = "sampling/custom_sampling/samplers"
-    DESCRIPTION = (
-        "Second-pass calibration sampler. Replays exact captured fused states through the currently "
-        "loaded reference MODEL and returns the captured fused final latent so continuation stays exact."
-    )
+    DESCRIPTION = "Legacy Ref2VA replay alias. Use MiniMax H3 RefDelta Comparison Replay."
 
     def build(self, calibration_id, telemetry_prefix):
         import comfy.samplers
@@ -162,7 +199,7 @@ class MiniMaxH3RefDeltaReferenceGuider:
     CATEGORY = "sampling/custom_sampling/guiders"
     DESCRIPTION = (
         "Legacy simultaneous dual-model diagnostic. It may require both full H3 models resident; "
-        "prefer Calibration Capture + Reference Replay."
+        "prefer Calibration Capture + Comparison Replay."
     )
 
     def build(self, model, reference_model, positive, negative, cfg):
@@ -183,6 +220,7 @@ class MiniMaxH3RefDeltaReferenceGuider:
 
 NODE_CLASS_MAPPINGS = {
     "MiniMaxH3RefDeltaSampler": MiniMaxH3RefDeltaSampler,
+    "MiniMaxH3RefDeltaComparisonReplaySampler": MiniMaxH3RefDeltaComparisonReplaySampler,
     "MiniMaxH3RefDeltaReferenceReplaySampler": MiniMaxH3RefDeltaReferenceReplaySampler,
     "MiniMaxH3RefDeltaScheduler": MiniMaxH3RefDeltaScheduler,
     "MiniMaxH3RefDeltaReferenceGuider": MiniMaxH3RefDeltaReferenceGuider,
@@ -190,7 +228,8 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3RefDeltaSampler": "MiniMax H3 RefDelta Sampler",
-    "MiniMaxH3RefDeltaReferenceReplaySampler": "MiniMax H3 RefDelta Reference Replay",
+    "MiniMaxH3RefDeltaComparisonReplaySampler": "MiniMax H3 RefDelta Comparison Replay",
+    "MiniMaxH3RefDeltaReferenceReplaySampler": "[Legacy] MiniMax H3 RefDelta Reference Replay",
     "MiniMaxH3RefDeltaScheduler": "MiniMax H3 RefDelta Scheduler",
     "MiniMaxH3RefDeltaReferenceGuider": "[Legacy] MiniMax H3 RefDelta Reference Guider",
 }

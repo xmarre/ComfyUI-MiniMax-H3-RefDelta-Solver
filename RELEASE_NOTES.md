@@ -1,14 +1,22 @@
 # Unreleased
 
-## Reference calibration
+## Labeled comparison calibration
 
-- Added disk-backed two-pass same-state calibration instead of requiring fused and genuine Ref2VA MODELs in one live sampling graph.
+- Generalized the disk-backed replay system into labeled comparison passes. One fused INT8 ConvRot capture can now be replayed separately through FL2VA and genuine Ref2VA while loading one full H3 model per execution.
 - `MiniMax H3 RefDelta Sampler` can now capture each exact packed sampler state, fused x0, sigma schedule, actual/forecast classification, baseline telemetry, and final pre-inverse-scaling sampler tensor under an explicit `calibration_id`.
 - Capture tensors are persisted step-by-step as safetensors rather than retained for the complete run in CPU/GPU memory. Interrupted captures are marked incomplete and rejected by replay.
-- Added `MiniMax H3 RefDelta Reference Replay`. In a second execution of the same workflow, users switch the existing source MODEL to genuine Ref2VA and put Reference Replay in the same SAMPLER socket; no duplicate production model path is required.
-- Reference Replay evaluates only captured actual steps on the exact original fused states/sigmas, merges same-state x0/velocity metrics into the baseline telemetry, and then returns the captured fused final sampler tensor. Continuum therefore builds later chunks from the original fused trajectory instead of drifting onto a newly generated Ref2VA trajectory.
-- The replay path requires only one full H3 MODEL per execution. The previous simultaneous dual-model reference GUIDER remains registered as deprecated saved-workflow compatibility only.
+- Added `MiniMax H3 RefDelta Comparison Replay` with a safe `comparison_label`. `fl2va` stores the base-model x0 pass; `ref2va` requires that completed pass and computes disk-backed cross-model delta decomposition.
+- Comparison passes are schema-versioned and capture-fingerprinted. Separate labels never overwrite each other, completed labels are immutable, and interrupted labels can be replaced.
+- Replay evaluates only captured actual steps on exact fused states/sigmas and returns the captured fused final pre-inverse-scaling tensor. Continuum therefore builds every later chunk from the original fused trajectory.
+- Added separate video/audio metrics for fused-vs-FL2VA, fused-vs-Ref2VA, Ref2VA-from-FL2VA versus fused-from-FL2VA direction, magnitude, projection, residual, and orthogonal components. Undefined zero-delta normalizations emit null with an explicit defined flag.
+- Ref2VA is documented and encoded as a comparison model for the imported reference delta, not as a quality oracle. Legacy Reference Replay/Guider nodes remain registered for saved workflows.
 - Calibration capture keeps Spectrum actual/forecast metadata so replay never evaluates a genuine reference model against a forecast result. Spectrum-off capture remains the recommended first calibration dataset.
+
+## Scheduler profile tooling
+
+- Removed Ref2VA-relative “model error” and error-slope inputs from scheduler density construction.
+- `tools/build_profile.py` now emits a neutral provisional profile by default while aggregating production stability and labeled comparison diagnostics into metadata.
+- An explicit `--experimental-stability-density` mode can use production trajectory risk, curvature, extrapolation error, optional stochastic pressure, and instability slope. Comparison metrics remain explanatory and never enter density.
 
 ## Risk and telemetry
 
