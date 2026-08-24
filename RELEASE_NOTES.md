@@ -33,7 +33,7 @@
 
 # MiniMax H3 RefDelta Solver v0.2.0
 
-v0.2.0 adds explicit compatibility with Spectrum MiniMax H3 v0.2.18+ while preserving RefDelta's actual-anchor evidence rules and adaptive stochastic path.
+v0.2.0 adds explicit compatibility with Spectrum MiniMax H3 v0.2.20+ while preserving RefDelta's actual-anchor evidence rules and adaptive stochastic path.
 
 ## Solver
 
@@ -54,11 +54,13 @@ v0.2.0 adds explicit compatibility with Spectrum MiniMax H3 v0.2.18+ while prese
 ## Compatibility
 
 - Solver history and RefDelta evidence history are separate. Spectrum forecasts remain valid ER-SDE solver values but never become risk or trajectory-correction anchors.
+- Spectrum forecast gaps preserve the last valid actual native stochastic/movement evidence instead of clearing it; only a later actual model evaluation may replace or clear that evidence.
+- Bounded trajectory correction may be applied to a forecast from the latest actual-only anchor and derivatives without committing the forecast to evidence history.
 - Spectrum classifies actual, forecast, and offline-replay source steps through a structural bridge with no hard runtime dependency from RefDelta to Spectrum.
 - RefDelta publishes the exact post-adaptation stochastic increment for Spectrum compensation and replay ownership.
 - Native-equivalence mode retains direct delegation to current ComfyUI ER-SDE.
 - Reference diagnostic results under Spectrum are matched to actual calls by sigma, avoiding stale sampler-ordinal failures after forecast steps.
 - Invalid or mismatched bridge state fails explicitly instead of silently contaminating history or stochastic ownership.
-- The native fixture matrix verifies that marked forecasts stay out of RefDelta evidence commits.
+- The native fixture matrix verifies that marked forecasts stay out of RefDelta evidence commits and preserve actual-only control evidence across forecast gaps.
 
 The implementation is experimental until representative rank-1024 GPU calibration and held-out media validation are completed.
