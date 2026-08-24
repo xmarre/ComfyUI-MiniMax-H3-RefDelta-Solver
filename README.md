@@ -235,10 +235,12 @@ Judge the final media as well as the telemetry. Intermediate sharpness alone is 
 ## Spectrum compatibility
 
 RefDelta Solver v0.2.0 is compatible with
-[ComfyUI-Spectrum-MiniMax-H3 v0.2.18+](https://github.com/xmarre/ComfyUI-Spectrum-MiniMax-H3).
+[ComfyUI-Spectrum-MiniMax-H3 v0.2.20+](https://github.com/xmarre/ComfyUI-Spectrum-MiniMax-H3).
 The integration uses a fail-closed API-v1 contract:
 
-- Spectrum labels each sampler result as an actual evaluation or forecast. RefDelta keeps every result in ER-SDE's solver history, but only actual model outputs enter its risk and trajectory-correction history.
+- Spectrum labels each sampler result as an actual evaluation or forecast. RefDelta keeps every result in ER-SDE's solver history, but only actual model outputs enter its risk and trajectory-correction evidence history.
+- Spectrum forecast gaps preserve the most recent valid native stochastic/movement evidence from an actual model evaluation. Forecasts do not create new stochastic-pressure evidence and do not erase the previous actual measurement; the next actual evaluation replaces or clears it normally.
+- Optional bounded trajectory correction may be applied to a forecast using only the last actual-model raw anchor and actual-only derivative evidence. The forecasted x0 itself is never committed as an evidence anchor.
 - RefDelta publishes the exact stochastic tensor after its risk and endpoint gates. Spectrum owns that final tensor for skipped-state compensation and seeded offline replay, so noise is neither estimated from the native formula nor applied twice.
 - Native-equivalence mode continues to delegate to ComfyUI's reviewed `sample_er_sde` and uses Spectrum's native ER-SDE tracking path.
 - A missing, stale, or mismatched bridge fails explicitly; Spectrum rejects unreviewed RefDelta versions before forecasting.
