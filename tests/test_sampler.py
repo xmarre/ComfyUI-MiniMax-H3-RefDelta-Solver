@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from comfyui_refdelta_solver.config import RefDeltaSamplerConfig
-from comfyui_refdelta_solver.sampler import sample_refdelta_er_sde
+from comfyui_refdelta_solver.sampler import _stochastic_movement_ratio, sample_refdelta_er_sde
 from comfyui_refdelta_solver.spectrum_interop import (
     SPECTRUM_BRIDGE_KEY,
     SPECTRUM_INTEROP_CONTRACT,
@@ -67,6 +67,16 @@ def test_native_equivalence_mode_delegates_without_reimplementation(monkeypatch)
 def test_invalid_stage_fails_before_model_access():
     with pytest.raises(ValueError, match="max_stage"):
         sample_refdelta_er_sde(object(), torch.tensor([1.0]), torch.tensor([1.0, 0.0]), max_stage=4)
+
+
+def test_stochastic_movement_ratio_is_undefined_without_real_movement():
+    stochastic = torch.ones(4)
+    assert _stochastic_movement_ratio(stochastic, torch.zeros(4)) is None
+    assert _stochastic_movement_ratio(stochastic, torch.full((4,), torch.finfo(torch.float32).eps / 4)) is None
+
+    ratio = _stochastic_movement_ratio(stochastic, torch.full((4,), 0.5))
+    assert ratio is not None
+    assert ratio.item() == pytest.approx(2.0)
 
 
 def test_sampler_publishes_versioned_spectrum_contract():
