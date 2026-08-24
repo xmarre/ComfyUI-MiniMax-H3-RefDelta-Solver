@@ -27,6 +27,8 @@
 - Treat zero/subnormal denoised movement as undefined stochastic evidence, eliminating the artificial first-step epsilon spike and frozen-stream risk floor.
 - Use `torch.finfo(dtype).tiny` rather than numerical epsilon for the undefined-movement threshold so small legitimate BF16 movement remains measurable.
 - Record native and actually-applied stochastic RMS/ratios separately while continuing to publish the exact post-gate increment to Spectrum.
+- Preserve the last valid actual-model native stochastic/movement evidence across Spectrum forecast gaps. Forecasts neither invent new pressure evidence nor erase the previous actual measurement; the next actual evaluation replaces or clears it normally.
+- Allow bounded trajectory correction to be applied to a Spectrum forecast using only the most recent actual-model raw anchor and actual-only derivative evidence. Forecast values remain excluded from `evidence_history` and can never become future correction/risk anchors.
 - Keep no-adaptation sampling numerically unchanged unless telemetry or calibration capture is explicitly enabled; the strict no-instrumentation baseline still delegates directly to native ComfyUI ER-SDE.
 
 # MiniMax H3 RefDelta Solver v0.2.0
