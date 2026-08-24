@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from comfyui_refdelta_solver.diagnostics import compare_same_state
+from comfyui_refdelta_solver.diagnostics import compare_same_state, spectrum_step_is_forecast
 from comfyui_refdelta_solver.trajectory import StreamLayout
 
 
@@ -33,4 +33,19 @@ def test_same_state_reference_rejects_shape_device_or_dtype_mismatch():
         compare_same_state(state, torch.tensor(1.0), state, torch.ones((1, 5)), StreamLayout(2))
     with pytest.raises(ValueError, match="dtype"):
         compare_same_state(state, torch.tensor(1.0), state, state.double(), StreamLayout(2))
+
+
+def test_spectrum_forecast_marker_gates_reference_evaluation_only_when_explicit():
+    assert not spectrum_step_is_forecast(None)
+    assert not spectrum_step_is_forecast({})
+    assert not spectrum_step_is_forecast({"transformer_options": {}})
+    assert not spectrum_step_is_forecast(
+        {"transformer_options": {"spectrum_h3_actual": True}}
+    )
+    assert spectrum_step_is_forecast(
+        {"transformer_options": {"spectrum_h3_actual": False}}
+    )
+    assert not spectrum_step_is_forecast(
+        {"transformer_options": {"spectrum_h3_actual": 0}}
+    )
 
