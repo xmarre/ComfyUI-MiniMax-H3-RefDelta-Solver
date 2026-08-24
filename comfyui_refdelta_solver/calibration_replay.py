@@ -11,6 +11,7 @@ import torch
 from safetensors.torch import load_file, save_file
 
 from .diagnostics import compare_same_state
+from .spectrum_interop import spectrum_bridge
 from .telemetry import TelemetryWriter, flatten_record
 from .trajectory import StreamLayout
 
@@ -218,6 +219,7 @@ class CalibrationReplay:
         return sample.to(device)
 
 
+@torch.no_grad()
 def sample_refdelta_reference_replay(
     model,
     x,
@@ -237,6 +239,10 @@ def sample_refdelta_reference_replay(
     """
     del disable
     extra_args = {} if extra_args is None else extra_args
+    if spectrum_bridge(extra_args) is not None:
+        raise RuntimeError(
+            "RefDelta Reference Replay requires Spectrum to be disabled on the reference run"
+        )
 
     from comfy.k_diffusion import sampling as k_sampling
     import folder_paths
@@ -266,6 +272,11 @@ def sample_refdelta_reference_replay(
             baseline["replay_reference_evaluated"] = replay.actual[step]
             if replay.actual[step]:
                 reference_x0 = model(state, sigmas[step] * s_in, **extra_args)
+                if torch.equal(reference_x0, fused_x0):
+                    raise ValueError(
+                        "RefDelta Reference Replay produced bit-identical x0 to the fused capture; "
+                        "verify that the existing MODEL loader was switched to genuine Ref2VA"
+                    )
                 baseline["reference"] = compare_same_state(
                     state,
                     sigmas[step],
