@@ -13,6 +13,10 @@ from comfyui_refdelta_solver.calibration_replay import (
     safe_calibration_id,
     sample_refdelta_reference_replay,
 )
+from comfyui_refdelta_solver.spectrum_interop import (
+    SPECTRUM_BRIDGE_KEY,
+    SPECTRUM_INTEROP_CONTRACT,
+)
 from comfyui_refdelta_solver.trajectory import StreamLayout
 
 
@@ -45,6 +49,40 @@ def _write_capture(tmp_path, *, actual=(True, True)):
     final = torch.tensor([[9.0, 8.0, 7.0, 6.0]])
     writer.close(final)
     return sigmas, states, fused, final
+
+
+def _install_replay_runtime(tmp_path, monkeypatch):
+    folder_paths = ModuleType("folder_paths")
+    folder_paths.get_output_directory = lambda: str(tmp_path)
+    monkeypatch.setitem(sys.modules, "folder_paths", folder_paths)
+
+    sampling = ModuleType("comfy.k_diffusion.sampling")
+    sampling.offset_first_sigma_for_snr = lambda values, model_sampling: values
+    k_diffusion = ModuleType("comfy.k_diffusion")
+    k_diffusion.sampling = sampling
+    comfy = sys.modules.get("comfy") or ModuleType("comfy")
+    comfy.k_diffusion = k_diffusion
+    monkeypatch.setitem(sys.modules, "comfy", comfy)
+    monkeypatch.setitem(sys.modules, "comfy.k_diffusion", k_diffusion)
+    monkeypatch.setitem(sys.modules, "comfy.k_diffusion.sampling", sampling)
+
+
+class _ModelPatcher:
+    @staticmethod
+    def get_model_object(name):
+        assert name == "model_sampling"
+        return object()
+
+
+class _ReferenceModel:
+    def __init__(self, scale=0.5):
+        self.inner_model = SimpleNamespace(model_patcher=_ModelPatcher())
+        self.calls = []
+        self.scale = scale
+
+    def __call__(self, state, sigma, **extra_args):
+        self.calls.append((state.detach().clone(), sigma.detach().clone(), dict(extra_args)))
+        return state * self.scale
 
 
 def test_safe_calibration_id_and_invocation_key_are_deterministic():
@@ -122,37 +160,9 @@ def test_new_capture_replaces_stale_incomplete_invocation(tmp_path):
 
 def test_reference_replay_evaluates_only_actual_steps_and_returns_fused_final(tmp_path, monkeypatch):
     sigmas, states, _fused, final = _write_capture(tmp_path, actual=(True, False))
+    _install_replay_runtime(tmp_path, monkeypatch)
 
-    folder_paths = ModuleType("folder_paths")
-    folder_paths.get_output_directory = lambda: str(tmp_path)
-    monkeypatch.setitem(sys.modules, "folder_paths", folder_paths)
-
-    sampling = ModuleType("comfy.k_diffusion.sampling")
-    sampling.offset_first_sigma_for_snr = lambda values, model_sampling: values
-    k_diffusion = ModuleType("comfy.k_diffusion")
-    k_diffusion.sampling = sampling
-    comfy = sys.modules.get("comfy") or ModuleType("comfy")
-    comfy.k_diffusion = k_diffusion
-    monkeypatch.setitem(sys.modules, "comfy", comfy)
-    monkeypatch.setitem(sys.modules, "comfy.k_diffusion", k_diffusion)
-    monkeypatch.setitem(sys.modules, "comfy.k_diffusion.sampling", sampling)
-
-    class ModelPatcher:
-        @staticmethod
-        def get_model_object(name):
-            assert name == "model_sampling"
-            return object()
-
-    class ReferenceModel:
-        def __init__(self):
-            self.inner_model = SimpleNamespace(model_patcher=ModelPatcher())
-            self.calls = []
-
-        def __call__(self, state, sigma, **extra_args):
-            self.calls.append((state.detach().clone(), sigma.detach().clone(), dict(extra_args)))
-            return state * 0.5
-
-    model = ReferenceModel()
+    model = _ReferenceModel(scale=0.5)
     callbacks = []
     output = sample_refdelta_reference_replay(
         model,
@@ -177,3 +187,49 @@ def test_reference_replay_evaluates_only_actual_steps_and_returns_fused_final(tm
     assert '"replay_reference_evaluated": false' in rows[1]
     assert '"reference_video_x0_cosine"' in rows[0]
     assert '"reference_video_x0_cosine"' not in rows[1]
+
+
+def test_reference_replay_rejects_spectrum_on_reference_run(tmp_path, monkeypatch):
+    sigmas, _states, _fused, _final = _write_capture(tmp_path)
+    _install_replay_runtime(tmp_path, monkeypatch)
+
+    class Bridge:
+        api_version = 1
+        interop_contract = SPECTRUM_INTEROP_CONTRACT
+
+        @staticmethod
+        def model_result_is_actual(step_id):
+            return True
+
+        @staticmethod
+        def publish_stochastic_increment(step_id, increment):
+            return None
+
+    extra_args = {
+        "seed": 17,
+        "model_options": {
+            "transformer_options": {SPECTRUM_BRIDGE_KEY: Bridge()}
+        },
+    }
+    with pytest.raises(RuntimeError, match="Spectrum.*disabled"):
+        sample_refdelta_reference_replay(
+            _ReferenceModel(),
+            torch.zeros(1, 4),
+            sigmas,
+            extra_args=extra_args,
+            calibration_id="unit-test",
+        )
+
+
+def test_reference_replay_rejects_bit_identical_model_output(tmp_path, monkeypatch):
+    sigmas, _states, _fused, _final = _write_capture(tmp_path, actual=(True, False))
+    _install_replay_runtime(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="switched to genuine Ref2VA"):
+        sample_refdelta_reference_replay(
+            _ReferenceModel(scale=0.25),
+            torch.zeros(1, 4),
+            sigmas,
+            extra_args={"seed": 17},
+            calibration_id="unit-test",
+        )
