@@ -129,6 +129,7 @@ The integration uses a fail-closed API-v1 contract:
 - A missing, stale, or mismatched bridge fails explicitly; Spectrum rejects unreviewed RefDelta versions before forecasting.
 
 The same-state reference diagnostic remains valid: forecast steps produce no reference result, while actual reference results are matched by sigma rather than sampler-loop ordinal.
+CI validates the interop-facing sampler behavior across the reviewed native ComfyUI matrix.
 
 ## Development
 
