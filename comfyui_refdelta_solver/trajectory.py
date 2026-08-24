@@ -162,9 +162,12 @@ class TrajectoryHistory:
         return TrajectoryObservation(first, second, direction, movement, combined, stream_risks, components)
 
     def commit(self, raw: torch.Tensor, coordinate: float, first: torch.Tensor | None) -> None:
-        if self.previous_raw is not None:
-            if self.previous_raw.shape != raw.shape or self.previous_raw.device != raw.device or self.previous_raw.dtype != raw.dtype:
-                self.reset()
+        if self.previous_raw is not None and (
+            self.previous_raw.shape != raw.shape
+            or self.previous_raw.device != raw.device
+            or self.previous_raw.dtype != raw.dtype
+        ):
+            self.reset()
         prior_coordinate = self.previous_coordinate
         self.previous_raw = raw.detach().clone(memory_format=torch.contiguous_format)
         self.previous_first = None if first is None else first.detach().clone(memory_format=torch.contiguous_format)

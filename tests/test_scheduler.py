@@ -76,15 +76,16 @@ def test_profile_loading_and_fallback(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    "mutation,match",
+    "mutation,exception,match",
     (
-        (lambda data: data.update(version=2), "version"),
-        (lambda data: data.update(points=[]), "same length"),
-        (lambda data: data["points"].insert(1, {"progress": 0.0, "difficulty": 1.0}), "strictly increasing"),
-        (lambda data: data["points"][0].update(difficulty=0.0), "positive"),
+        (lambda data: data.update(version=2), ValueError, "version"),
+        (lambda data: data.update(points="invalid"), TypeError, "must be a list"),
+        (lambda data: data.update(points=[]), ValueError, "same length"),
+        (lambda data: data["points"].insert(1, {"progress": 0.0, "difficulty": 1.0}), ValueError, "strictly increasing"),
+        (lambda data: data["points"][0].update(difficulty=0.0), ValueError, "positive"),
     ),
 )
-def test_invalid_profiles_fail(mutation, match):
+def test_invalid_profiles_fail(mutation, exception, match):
     data = {
         "version": 1,
         "id": "bad",
@@ -94,7 +95,7 @@ def test_invalid_profiles_fail(mutation, match):
         ],
     }
     mutation(data)
-    with pytest.raises(ValueError, match=match):
+    with pytest.raises(exception, match=match):
         profile_from_dict(data)
 
 

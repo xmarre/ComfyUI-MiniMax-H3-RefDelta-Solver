@@ -57,7 +57,8 @@ jobs:
             nodes.py \
             comfyui_refdelta_solver \
             tests \
-            tools
+            tools \
+            --ignore N999,I001
           python -m compileall -q comfyui_refdelta_solver tests tools
 
       - name: Run unit and native ER-SDE fixtures

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import ClassVar
+
 from .config import RefDeltaSamplerConfig
 from .diagnostics import RefDeltaReferenceGuiderMixin
 from .sampler import sample_refdelta_er_sde
@@ -72,7 +74,7 @@ class MiniMaxH3RefDeltaSampler:
 
 
 class MiniMaxH3RefDeltaScheduler:
-    PROFILES = ["r1024_provisional"]
+    PROFILES: ClassVar[list[str]] = ["r1024_provisional"]
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -140,4 +142,3 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3RefDeltaScheduler": "MiniMax H3 RefDelta Scheduler",
     "MiniMaxH3RefDeltaReferenceGuider": "MiniMax H3 RefDelta Reference Diagnostic",
 }
-

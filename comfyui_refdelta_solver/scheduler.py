@@ -54,7 +54,7 @@ def profile_from_dict(data: dict[str, Any]) -> CalibrationProfile:
         raise ValueError(f"unsupported calibration profile version {data.get('version')!r}")
     points = data.get("points")
     if not isinstance(points, list):
-        raise ValueError("calibration profile points must be a list")
+        raise TypeError("calibration profile points must be a list")
     profile = CalibrationProfile(
         profile_id=str(data["id"]),
         model_family=str(data.get("model_family", "MiniMax-H3 RefDelta")),
