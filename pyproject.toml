@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comfyui-minimax-h3-refdelta-solver"
+description = "A RefDelta-aware ER-SDE sampler and calibrated scheduler for MiniMax-H3 rank-limited fused checkpoints."
+version = "0.1.0"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "xmarre" }]
+keywords = ["comfyui", "minimax-h3", "refdelta", "er-sde", "sampler", "scheduler"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/xmarre/ComfyUI-MiniMax-H3-RefDelta-Solver"
+"Bug Tracker" = "https://github.com/xmarre/ComfyUI-MiniMax-H3-RefDelta-Solver/issues"
+
+[tool.comfy]
+PublisherId = "xmarre"
+DisplayName = "MiniMax H3 RefDelta Solver"
+Icon = ""
+includes = ["__init__.py", "nodes.py", "comfyui_refdelta_solver", "LICENSE", "README.md"]
+
+[tool.setuptools.packages.find]
+include = ["comfyui_refdelta_solver*"]
+
+[tool.setuptools.package-data]
+comfyui_refdelta_solver = ["profiles/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+

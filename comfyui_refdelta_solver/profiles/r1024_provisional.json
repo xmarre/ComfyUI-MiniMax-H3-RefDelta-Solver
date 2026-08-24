@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "id": "r1024_provisional",
+  "model_family": "MiniMax-H3 Pruned Ref-Delta Fused",
+  "rank": 1024,
+  "status": "provisional-uncalibrated",
+  "domain": "video-sigma-progress-over-beta-prior",
+  "points": [
+    {"progress": 0.0, "difficulty": 1.0},
+    {"progress": 0.25, "difficulty": 1.0},
+    {"progress": 0.5, "difficulty": 1.0},
+    {"progress": 0.75, "difficulty": 1.0},
+    {"progress": 1.0, "difficulty": 1.0}
+  ],
+  "metadata": {
+    "checkpoint": "xmarre/MiniMax-H3-Pruned-Ref-Delta-Fused-r1024-ComfyUI",
+    "source_revision": "c7d26373ecb070f1f1dc8811609d56d10d45d690",
+    "matrix_delta_energy_capture": 0.9943107633069408,
+    "compressed_matrix_median_capture": 0.4611,
+    "compressed_matrix_mean_capture": 0.4962,
+    "exact_vector_bias_patches": 267,
+    "base_scheduler": {"name": "beta", "alpha": 0.6, "beta": 0.6},
+    "note": "Neutral density until matched same-state fused/reference telemetry establishes a time-dependent error profile. AdaLN curvature is intentionally not used without measured correlation."
+  }
+}

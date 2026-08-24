@@ -1,0 +1,67 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-and-native-fixture:
+    strategy:
+      fail-fast: false
+      matrix:
+        comfy_ref:
+          - 27bca654eb9a70237d93f56a6ea336ab55f8925d
+          - ff6c8a8af144fc9e9e7bc436b1b202f9316848d8
+          - b78cec879b9460d5cb25228a83a942fb78d2cd24
+        python_version:
+          - "3.12"
+        include:
+          - comfy_ref: b78cec879b9460d5cb25228a83a942fb78d2cd24
+            python_version: "3.13"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out custom node
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check out reviewed ComfyUI source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          repository: comfyanonymous/ComfyUI
+          ref: ${{ matrix.comfy_ref }}
+          path: ComfyUI
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python_version }}
+          cache: pip
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install pytest ruff numpy scipy torchsde psutil safetensors einops tqdm pyyaml pillow packaging comfy-kitchen==0.2.26 comfy-aimdo==0.4.13
+          python -m pip wheel --no-deps --wheel-dir /tmp/refdelta-solver-wheel .
+
+      - name: Run Ruff and compileall
+        run: |
+          python -m ruff check \
+            __init__.py \
+            nodes.py \
+            comfyui_refdelta_solver \
+            tests \
+            tools
+          python -m compileall -q comfyui_refdelta_solver tests tools
+
+      - name: Run unit and native ER-SDE fixtures
+        env:
+          COMFYUI_PATH: ${{ github.workspace }}/ComfyUI
+          PYTHONPATH: ${{ github.workspace }}/ComfyUI:${{ github.workspace }}
+        run: python -m pytest -q
