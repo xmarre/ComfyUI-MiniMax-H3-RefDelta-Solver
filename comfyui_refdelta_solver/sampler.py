@@ -158,7 +158,7 @@ def sample_refdelta_er_sde(
                         layout,
                         None,
                         None,
-                        raw_denoised.new_zeros(()),
+                        raw_denoised,
                         config.risk_sensitivity,
                     )
                     record["effective_order"] = 1
