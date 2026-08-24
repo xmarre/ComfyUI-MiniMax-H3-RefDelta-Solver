@@ -16,6 +16,8 @@ class RefDeltaSamplerConfig:
     endpoint_fidelity_fraction: float = 0.15
     telemetry: bool = False
     telemetry_prefix: str = "refdelta_trajectory"
+    calibration_capture: bool = False
+    calibration_id: str = "refdelta_calibration"
 
     def validate(self) -> None:
         if not 0.0 <= self.risk_sensitivity <= 4.0:
@@ -32,6 +34,8 @@ class RefDeltaSamplerConfig:
             raise ValueError("correction_bound must be in [0, 2]")
         if not 0.0 <= self.endpoint_fidelity_fraction <= 0.50:
             raise ValueError("endpoint_fidelity_fraction must be in [0, 0.5]")
+        if self.calibration_capture and not str(self.calibration_id).strip():
+            raise ValueError("calibration_id must not be empty when calibration capture is enabled")
 
     @property
     def is_native_equivalence_mode(self) -> bool:
@@ -40,5 +44,5 @@ class RefDeltaSamplerConfig:
             and self.stochastic_adaptation_strength == 0.0
             and not self.trajectory_correction
             and not self.telemetry
+            and not self.calibration_capture
         )
-
