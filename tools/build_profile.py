@@ -28,12 +28,40 @@ def read_records(paths: list[Path]) -> list[dict[str, float | str | bool | None]
                 if isinstance(value, bool):
                     parsed[key] = value
                     continue
+                if isinstance(value, str) and value.casefold() in {"true", "false"}:
+                    parsed[key] = value.casefold() == "true"
+                    continue
                 try:
                     parsed[key] = float(value)
                 except (TypeError, ValueError):
                     parsed[key] = str(value)
             records.append(parsed)
     return records
+
+
+def deduplicate_production_records(
+    records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Remove replay copies of the same captured production telemetry row."""
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[tuple[str, str, str], ...]] = set()
+    for record in records:
+        production = {
+            key: value
+            for key, value in record.items()
+            if not key.startswith(("comparison_", "ref_delta_"))
+        }
+        identity = tuple(
+            sorted(
+                (key, type(value).__name__, repr(value))
+                for key, value in production.items()
+            )
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique.append(production)
+    return unique
 
 
 def _finite_values(record: dict[str, Any], predicate) -> list[float]:
@@ -179,7 +207,8 @@ def build_profile(
     weights: dict[str, float],
     input_files: list[str] | None = None,
 ) -> dict[str, Any]:
-    points = bin_stability_records(records, bins)
+    production_records = deduplicate_production_records(records)
+    points = bin_stability_records(production_records, bins)
     if not points:
         raise ValueError("no finite sigma-bearing telemetry records were found")
     if experimental_stability_density:
@@ -209,6 +238,9 @@ def build_profile(
         "metadata": {
             "input_files": input_files or [],
             "input_records": len(records),
+            "unique_production_records": len(production_records),
+            "replayed_production_duplicates_removed": len(records)
+            - len(production_records),
             "populated_bins": len(points),
             "density_source": (
                 "production_trajectory_stability"

@@ -185,6 +185,8 @@ python tools/build_profile.py \
 
 The default output keeps every scheduler difficulty point at `1.0`. It aggregates production trajectory risk, curvature, extrapolation error, stochastic pressure, and labeled comparison/delta diagnostics into metadata. FL2VA/Ref2VA distances never feed scheduler density.
 
+Comparison replay rows repeat the captured production telemetry by design. The profile builder deduplicates those copies before binning stability evidence, so a capture plus its FL2VA and Ref2VA replays still count as one production trajectory rather than three. Raw input and unique production-record counts are both retained in metadata.
+
 An explicitly experimental production-stability density can be generated with:
 
 ```bash

@@ -16,6 +16,7 @@
 
 - Removed Ref2VA-relative “model error” and error-slope inputs from scheduler density construction.
 - `tools/build_profile.py` now emits a neutral provisional profile by default while aggregating production stability and labeled comparison diagnostics into metadata.
+- Replayed copies of captured production telemetry are deduplicated before stability binning, preventing capture + FL2VA + Ref2VA inputs from triple-counting one fused trajectory; metadata reports both raw and unique counts.
 - An explicit `--experimental-stability-density` mode can use production trajectory risk, curvature, extrapolation error, optional stochastic pressure, and instability slope. Comparison metrics remain explanatory and never enter density.
 
 ## Risk and telemetry

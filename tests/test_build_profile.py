@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from tools.build_profile import build_profile
+from tools.build_profile import build_profile, read_records
 
 
 WEIGHTS = {
@@ -74,6 +74,61 @@ def test_explicit_experimental_density_uses_only_production_stability():
     assert original["status"] == "trajectory-stability-experimental"
     assert original["points"] == altered["points"]
     assert len({point["difficulty"] for point in original["points"]}) > 1
+
+
+def test_replay_copies_do_not_duplicate_production_stability_evidence():
+    captured = _records()
+    fl2va = [
+        dict(record, comparison_label="fl2va", comparison_fl2va_video_x0_cosine=0.9)
+        for record in captured
+    ]
+    ref2va = [
+        dict(record, comparison_label="ref2va", comparison_ref2va_video_x0_cosine=0.8)
+        for record in captured
+    ]
+    baseline = build_profile(
+        captured,
+        profile_id="baseline",
+        bins=4,
+        experimental_stability_density=True,
+        weights=WEIGHTS,
+    )
+    combined = build_profile(
+        captured + fl2va + ref2va,
+        profile_id="combined",
+        bins=4,
+        experimental_stability_density=True,
+        weights=WEIGHTS,
+    )
+
+    assert combined["points"] == baseline["points"]
+    metadata = combined["metadata"]
+    assert metadata["input_records"] == 12
+    assert metadata["unique_production_records"] == 4
+    assert metadata["replayed_production_duplicates_removed"] == 8
+    assert (
+        sum(point["samples"] for point in metadata["binned_production_stability"])
+        == 4
+    )
+    assert metadata["comparison_diagnostics"][
+        "comparison_fl2va_video_x0_cosine"
+    ] == pytest.approx(0.9)
+
+
+def test_read_records_normalizes_csv_booleans(tmp_path):
+    path = tmp_path / "telemetry.csv"
+    path.write_text(
+        "sigma,actual_model_evaluation,comparison_model_evaluated\n1.0,True,false\n",
+        encoding="utf-8",
+    )
+
+    assert read_records([path]) == [
+        {
+            "sigma": 1.0,
+            "actual_model_evaluation": True,
+            "comparison_model_evaluated": False,
+        }
+    ]
 
 
 def test_experimental_density_requires_four_populated_bins():
