@@ -45,6 +45,22 @@ def compare_same_state(
     return fields
 
 
+def spectrum_step_is_forecast(model_options: dict | None) -> bool:
+    """Return whether Spectrum explicitly classified the current guider call as forecast.
+
+    Spectrum's PREDICT_NOISE wrapper still executes the guider on forecast steps so
+    downstream wrappers can preserve normal call ordering. The fused transformer may
+    be skipped inside that call. Running the genuine Ref2VA diagnostic there would
+    compare a Spectrum forecast against a real reference-model evaluation and pollute
+    the same-state calibration dataset.
+    """
+    transformer_options = (model_options or {}).get("transformer_options")
+    if not isinstance(transformer_options, dict):
+        return False
+    actual = transformer_options.get("spectrum_h3_actual")
+    return type(actual) is bool and not actual
+
+
 class RefDeltaReferenceGuiderMixin:
     """Mixin installed on ComfyUI's CFGGuider by the diagnostic node.
 
@@ -71,6 +87,8 @@ class RefDeltaReferenceGuiderMixin:
         model_options = {} if model_options is None else model_options
         self._refdelta_reference_result = None
         fused = super().predict_noise(x, timestep, model_options=model_options, seed=seed)
+        if spectrum_step_is_forecast(model_options):
+            return fused
         reference = comfy.samplers.sampling_function(
             self.reference_inner_model,
             x,
