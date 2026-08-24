@@ -63,6 +63,10 @@ class ReferenceDiagnosticSpec:
 
 def attach_reference_diagnostic(model: Any, reference_model: Any):
     """Clone ``model`` and attach an opt-in same-state reference specification."""
+    if model is reference_model:
+        raise ValueError(
+            "RefDelta reference diagnostic requires a distinct reference MODEL"
+        )
     if not hasattr(model, "clone"):
         raise TypeError("RefDelta reference diagnostic requires a cloneable MODEL")
     if not hasattr(reference_model, "clone"):
