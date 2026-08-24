@@ -158,6 +158,33 @@ def test_new_capture_replaces_stale_incomplete_invocation(tmp_path):
     assert (second.directory / "manifest.json").is_file()
 
 
+def test_completed_capture_key_is_never_silently_overwritten(tmp_path):
+    sigmas = torch.tensor([1.0, 0.0])
+    writer = CalibrationCaptureWriter(
+        tmp_path,
+        "collision",
+        5,
+        1,
+        (1, 2),
+        sigmas,
+        StreamLayout(None),
+    )
+    writer.write_step(0, torch.ones(1, 2), torch.zeros(1, 2), actual=True)
+    writer.write_record(0, {"step": 0})
+    writer.close(torch.full((1, 2), 3.0))
+
+    with pytest.raises(FileExistsError, match="new calibration_id"):
+        CalibrationCaptureWriter(
+            tmp_path,
+            "collision",
+            5,
+            1,
+            (1, 2),
+            sigmas,
+            StreamLayout(None),
+        )
+
+
 def test_reference_replay_evaluates_only_actual_steps_and_returns_fused_final(tmp_path, monkeypatch):
     sigmas, states, _fused, final = _write_capture(tmp_path, actual=(True, False))
     _install_replay_runtime(tmp_path, monkeypatch)
