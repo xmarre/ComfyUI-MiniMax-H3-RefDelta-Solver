@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import math
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from .trajectory import (
     bounded_trajectory_correction,
     rms,
     stochastic_multiplier,
+    stochastic_pressure_from_ratio,
 )
 
 
@@ -112,6 +114,87 @@ def _stochastic_movement_ratio(
         return None
     ratio = rms(stochastic) / denominator
     return torch.nan_to_num(ratio, nan=0.0, posinf=1e9, neginf=0.0).clamp_min(0.0)
+
+
+_TRAJECTORY_RISK_COMPONENTS = (
+    "curvature",
+    "direction_change",
+    "magnitude_jump",
+    "extrapolation_error",
+)
+
+
+def _forecast_observation_with_latest_stochastic_evidence(
+    observation,
+    ratios: dict[str, torch.Tensor] | None,
+    sensitivity: float,
+    max_stage: int,
+):
+    """Refresh only stochastic evidence for a cached actual observation.
+
+    The current actual step must keep the observation that actually controlled
+    that step.  A subsequent Spectrum forecast, however, should see the native
+    stochastic/movement ratio measured after that actual step.  Rebuild only
+    the combined risk/stochastic fields while leaving every trajectory term and
+    derivative anchored to the actual model evaluation.
+    """
+    refreshed = copy.copy(observation)
+    zero = observation.risk.new_zeros(())
+    stream_risks: dict[str, torch.Tensor] = {}
+    stream_stochastic_pressures: dict[str, torch.Tensor] = {}
+    components: dict[str, dict[str, torch.Tensor]] = {}
+
+    for name, source_values in observation.components.items():
+        values = dict(source_values)
+        values.pop("previous_native_stochastic_ratio", None)
+        values.pop("previous_stochastic_pressure", None)
+
+        trajectory_signals = [
+            values[key]
+            for key in _TRAJECTORY_RISK_COMPONENTS
+            if key in values
+        ]
+        # observe() includes the stage term whenever an actual first derivative
+        # allowed ER stage 2/3 evidence for this step.
+        if (
+            max_stage >= 2
+            and observation.first is not None
+            and "stage_correction_ratio" in values
+        ):
+            trajectory_signals.append(values["stage_correction_ratio"])
+
+        combined_signals = list(trajectory_signals)
+        if ratios is not None and name in ratios:
+            native_ratio = torch.nan_to_num(
+                ratios[name],
+                nan=0.0,
+                posinf=1e9,
+                neginf=0.0,
+            ).clamp_min(0.0)
+            pressure = stochastic_pressure_from_ratio(native_ratio)
+            values["previous_native_stochastic_ratio"] = native_ratio
+            values["previous_stochastic_pressure"] = pressure
+            stream_stochastic_pressures[name] = pressure
+            combined_signals.append(pressure)
+
+        risk = torch.stack(combined_signals).mean() if combined_signals else zero
+        stream_risks[name] = (risk * sensitivity).clamp(0.0, 1.0)
+        components[name] = values
+
+    refreshed.risk = (
+        torch.stack(list(stream_risks.values())).amax()
+        if stream_risks
+        else zero
+    )
+    refreshed.stream_risks = stream_risks
+    refreshed.stochastic_pressure = (
+        torch.stack(list(stream_stochastic_pressures.values())).amax()
+        if stream_stochastic_pressures
+        else zero
+    )
+    refreshed.stream_stochastic_pressures = stream_stochastic_pressures
+    refreshed.components = components
+    return refreshed
 
 
 def _write_record(
@@ -437,6 +520,17 @@ def sample_refdelta_er_sde(
                     evidence_history.previous_stochastic_ratios = ratios or None
                 else:
                     evidence_history.previous_stochastic_ratios = None
+                if bridge is not None:
+                    # The ratio measured above is evidence from this genuine
+                    # model evaluation and is causally available to the very next
+                    # forecast. Keep the current step's local observation intact
+                    # for telemetry, but refresh the cached forecast view now.
+                    last_actual_observation = _forecast_observation_with_latest_stochastic_evidence(
+                        observation,
+                        evidence_history.previous_stochastic_ratios,
+                        config.risk_sensitivity,
+                        max_stage,
+                    )
             # A forecast contributes no new stochastic evidence. Preserve the
             # most recent actual native stochastic/movement ratios until another
             # actual model evaluation replaces or clears them.
