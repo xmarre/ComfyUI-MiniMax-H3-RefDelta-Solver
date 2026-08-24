@@ -82,6 +82,8 @@ The tensors are written per-step as safetensors instead of being retained for th
 
 Do **not** duplicate the model path. Use the same workflow and change the existing source MODEL loader from the fused/INT8 ConvRot checkpoint to genuine Ref2VA. This automatically reuses the same downstream deterministic patch chain instead of constructing a second copy of it.
 
+For the strongest memory isolation, **stop ComfyUI completely after pass 1 and restart it before pass 2**. The capture is entirely disk-backed, so replay survives a process restart. This guarantees that the fused transformer cannot remain resident or cached in the same process when genuine Ref2VA is loaded.
+
 Replace the normal RefDelta sampler in the same `SAMPLER` socket with `MiniMax H3 RefDelta Reference Replay` and enter the same `calibration_id`.
 
 Keep the same:
@@ -99,7 +101,7 @@ The replay sampler ignores the newly generated reference trajectory. At every ca
 
 After the reference evaluations for one invocation, replay returns the captured fused final sampler tensor rather than the Ref2VA result. Therefore Continuum chunk N+1 is constructed from the exact original fused chunk-N result. A multi-chunk replay cannot drift into a different reference-generated continuation trajectory.
 
-Only one H3 MODEL is connected for each execution. ComfyUI's normal model manager handles the checkpoint change between the two queued runs; this calibration path does not intentionally keep the fused and Ref2VA transformers resident together.
+Only one H3 MODEL is connected for each execution. A full ComfyUI restart between passes is recommended for calibration on large H3 checkpoints because it provides an explicit model-lifetime boundary rather than relying on cache/offload heuristics.
 
 The replay telemetry includes:
 
