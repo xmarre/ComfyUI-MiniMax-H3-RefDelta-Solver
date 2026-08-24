@@ -34,7 +34,7 @@ The default path uses every real model evaluation and keeps all history local to
 - separate video/audio reductions;
 - optional Taylor trajectory correction, **off by default**, bounded by recent raw x0 movement and never written back into history.
 
-Native stochastic pressure is measured before the stochastic gate is applied, so reducing noise on one step cannot make the next step appear artificially safer merely because the previous gate reduced its own evidence. The native stochastic/movement ratio is mapped smoothly as `ratio / (1 + ratio)` rather than hard-clamped at one. If denoised movement is zero or numerically undefined, stochastic pressure for that stream is omitted instead of creating a false maximum-risk observation.
+Native stochastic pressure is measured before the stochastic gate is applied, so reducing noise on one step cannot make the next step appear artificially safer merely because the previous gate reduced its own evidence. The native stochastic/movement ratio is mapped smoothly as `ratio / (1 + ratio)` rather than hard-clamped at one. Zero/subnormal movement is treated as undefined stochastic evidence instead of a false maximum-risk observation; the threshold uses the dtype's `tiny` scale rather than its much larger numerical epsilon, so small real BF16 movement is preserved.
 
 The advanced controls are intentionally bounded. Start with the defaults. `trajectory_correction` should remain off until diagnostic runs support it.
 
@@ -45,39 +45,79 @@ adaptive_order = false
 stochastic_adaptation_strength = 0
 trajectory_correction = false
 debug_telemetry = false
+calibration_capture = false
 ```
 
 That configuration delegates directly to ComfyUI's native `sample_er_sde`; it does not maintain a second approximation of the baseline.
+
+### MiniMax H3 RefDelta Reference Replay
+
+This is the preferred same-state calibration path. It deliberately avoids a graph containing two full H3 MODELs and never requires fused and genuine Ref2VA weights to be resident during the same sampler invocation.
+
+Calibration is two separate executions of the **same workflow**.
+
+#### Pass 1 — capture the fused trajectory
+
+Use the normal production/fused model path. For a clean initial calibration use stock beta, Spectrum off, and:
+
+```text
+adaptive_order = false
+stochastic_adaptation_strength = 0
+trajectory_correction = false
+calibration_capture = true
+calibration_id = int8-convrot-r1024-test-01
+```
+
+`debug_telemetry` is optional during a capture. The capture itself stores the scalar baseline records required for replay.
+
+For each sampler invocation, the capture writes the exact packed sampler state and fused x0 for every step immediately to disk under:
+
+```text
+ComfyUI/output/refdelta_calibration/<calibration_id>/
+```
+
+The tensors are written per-step as safetensors instead of being retained for the whole generation in CPU/GPU memory. A completed invocation also stores the exact pre-`inverse_noise_scaling` final sampler tensor and a manifest containing the seed, shape, sigma schedule, actual/forecast classification, and flattened baseline telemetry. Interrupted captures are explicitly marked incomplete and cannot be replayed.
+
+#### Pass 2 — replay with genuine Ref2VA
+
+Do **not** duplicate the model path. Use the same workflow and change the existing source MODEL loader from the fused/INT8 ConvRot checkpoint to genuine Ref2VA. This automatically reuses the same downstream deterministic patch chain instead of constructing a second copy of it.
+
+Replace the normal RefDelta sampler in the same `SAMPLER` socket with `MiniMax H3 RefDelta Reference Replay` and enter the same `calibration_id`.
+
+Keep the same:
+
+- prompt and references;
+- base seed;
+- resolution and duration;
+- Continuum chunk/context settings;
+- beta sigma schedule and step count;
+- deterministic model-field modifiers that are part of the comparison.
+
+For a clean first calibration, keep Spectrum off and disable/bypass downstream FaceRefine or other sampler-2 paths that reuse the same sampler. With Continuum Run Storage, force the chunks to execute rather than reusing stored results.
+
+The replay sampler ignores the newly generated reference trajectory. At every captured actual step it evaluates genuine Ref2VA on the **captured fused state and captured sigma**, computes same-state x0/velocity metrics, and writes merged telemetry under `ComfyUI/output/refdelta_telemetry/`.
+
+After the reference evaluations for one invocation, replay returns the captured fused final sampler tensor rather than the Ref2VA result. Therefore Continuum chunk N+1 is constructed from the exact original fused chunk-N result. A multi-chunk replay cannot drift into a different reference-generated continuation trajectory.
+
+Only one H3 MODEL is connected for each execution. ComfyUI's normal model manager handles the checkpoint change between the two queued runs; this calibration path does not intentionally keep the fused and Ref2VA transformers resident together.
+
+The replay telemetry includes:
+
+- video/audio x0 cosine and relative error;
+- video/audio velocity cosine and relative error;
+- the complete baseline trajectory/risk/stochastic fields captured in pass 1.
+
+This makes the replay JSONL/CSV directly usable by the existing profile-building tools.
+
+### Legacy simultaneous reference guider
+
+`[Legacy] MiniMax H3 RefDelta Reference Guider` remains registered only for saved-workflow compatibility. It evaluates fused and reference models in the same sampling call and may require both full H3 models to be resident. It is **not** the recommended calibration path.
 
 ### MiniMax H3 RefDelta Scheduler
 
 Connect its `SIGMAS` output to the custom sampler path. The scheduler starts from a continuous form of ComfyUI's beta(0.6, 0.6) prior, then redistributes beta-step fractions according to a versioned rank profile. Production sampling only needs the profile JSON; it never needs the genuine reference model.
 
-The included profile is `r1024_provisional`. It preserves the beta prior because its difficulty density is neutral. Replace it with a profile created from representative same-state diagnostic runs before calling the schedule rank-1024-calibrated.
-
-### MiniMax H3 RefDelta Reference Diagnostic
-
-This is an expensive **model-level calibration decorator**. Connect the production/fused MODEL and a genuine Ref2VA MODEL, then use its MODEL output in the normal sampling workflow. The diagnostic itself does not replace the workflow's sampler, scheduler, prompt, or conditioning path.
-
-On ordinary custom-sampler workflows, the legacy explicit GUIDER remains registered for saved-workflow compatibility. For H3 Continuum, use the model-level diagnostic: compatible Continuum versions detect the structural model-option contract and build the diagnostic inside their real per-chunk BasicGuider path. Both models then receive:
-
-- the exact same packed latent state and sigma;
-- the exact positive CONDITIONING object used for that Continuum chunk;
-- CFG=1 BasicGuider semantics;
-- equivalent call-local Continuum chunk wrappers and context hints.
-
-Enable `debug_telemetry` on the RefDelta sampler to record:
-
-- video/audio x0 cosine and relative error;
-- video/audio carried-solver velocity cosine and relative error.
-
-The carried audio latent uses the video solver coordinate by ComfyUI design. Multiplying both compared audio velocities by the same physical audio-sigma conversion does not change these cosine or relative-error metrics.
-
-#### Patch-stack rule
-
-The reference model should receive the **same deterministic model patches that are part of the production model field**—for example the same DiffAid/Untwist configuration when those are under test. Do not put Spectrum forecasting on the genuine Ref2VA reference side. Spectrum may remain on the fused/production side; forecast calls are explicitly suppressed from reference evaluation so only actual fused evaluations enter same-state calibration.
-
-The diagnostic roughly doubles transformer evaluations, requires both H3 models on the same load device, and is not part of production inference. It fails explicitly on malformed/nested contracts rather than silently falling back to a mismatched comparison.
+The included profile is `r1024_provisional`. It preserves the beta prior because its difficulty density is neutral. Replace it with a profile created from representative same-state replay telemetry before calling the schedule rank-1024-calibrated.
 
 ## Telemetry
 
@@ -89,7 +129,7 @@ ComfyUI/output/refdelta_telemetry/
 
 Each sampler invocation gets its own uniquely named file pair. Continuum's deterministic per-chunk seed is therefore visible in main-generation telemetry filenames; independent downstream sampler invocations such as FaceRefine may use their own seed path.
 
-Each actual model evaluation records the requested solver, sigma, effective audio sigma, latent/x0 movement, derivative/curvature, direction cosine, stage contribution, stochastic, adaptive-order, correction, and reference fields. Video and audio reductions are separate. Only raw x0 anchors and the derivative tensors required by the solver persist between steps; telemetry retains scalars, not latent snapshots.
+Ordinary telemetry retains scalars, not latent snapshots. The explicit `calibration_capture` mode is the exception: it persists the packed state/x0 tensors required for exact later replay under `output/refdelta_calibration/`.
 
 Risk/stochastic telemetry distinguishes:
 
@@ -99,9 +139,9 @@ Risk/stochastic telemetry distinguishes:
 - `native_stochastic_*`: what stock ER-SDE would have injected before RefDelta's stochastic gate;
 - `stochastic_*`: what was actually injected after the gate and published to Spectrum.
 
-A stochastic/movement ratio is `null` when no meaningful prior denoised movement exists, including the first step and frozen/protected streams. This prevents epsilon-division artifacts from being mistaken for calibration evidence.
+A stochastic/movement ratio is `null` when no meaningful prior denoised movement exists, including the first step and exactly frozen/protected streams. This prevents epsilon-division artifacts from being mistaken for calibration evidence without discarding small legitimate BF16 movement.
 
-Build a profile from multiple representative diagnostic files:
+Build a profile from multiple representative reference-replay files:
 
 ```bash
 python tools/build_profile.py \
@@ -139,7 +179,7 @@ For a defensible production profile, collect at least:
 
 1. several prompt/reference cases spanning motion, texture, speech/music, and quiet audio;
 2. multiple seeds per case at the intended step count and CFG;
-3. fused-only baseline telemetry plus same-state genuine Ref2VA telemetry;
+3. fused calibration captures plus genuine Ref2VA replay telemetry;
 4. held-out A/B runs for the resulting scheduler and sampler settings;
 5. interruption/restart and changed latent-shape checks on the real GPU workflow.
 
@@ -156,8 +196,7 @@ The integration uses a fail-closed API-v1 contract:
 - Native-equivalence mode continues to delegate to ComfyUI's reviewed `sample_er_sde` and uses Spectrum's native ER-SDE tracking path.
 - A missing, stale, or mismatched bridge fails explicitly; Spectrum rejects unreviewed RefDelta versions before forecasting.
 
-The same-state reference diagnostic remains valid: forecast steps produce no reference result, while actual reference results are matched by sigma rather than sampler-loop ordinal.
-CI validates the interop-facing sampler behavior across the reviewed native ComfyUI matrix.
+Calibration capture records Spectrum's actual/forecast classification. Reference replay evaluates only the captured actual steps. For initial calibration, Spectrum off is still recommended so the first dataset measures the underlying fused vector field without forecast substitutions.
 
 ## Development
 
