@@ -16,7 +16,7 @@ if os.environ.get("COMFYUI_PATH") and not torch.cuda.is_available():
         import comfy.options
 
         comfy.options.enable_args_parsing()
-        import comfy.cli_args  # noqa: F401
+        import comfy.cli_args
     finally:
         sys.argv[:] = original_argv
 
