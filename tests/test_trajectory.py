@@ -12,6 +12,7 @@ from comfyui_refdelta_solver.trajectory import (
     cosine,
     rms,
     stochastic_multiplier,
+    stochastic_pressure_from_ratio,
 )
 
 
@@ -59,6 +60,15 @@ def test_stochastic_multiplier_bounds_and_terminal_inputs():
     assert torch.all(multiplier <= 1.0)
     assert torch.all(multiplier[1:] <= multiplier[:-1])
     assert torch.all(stochastic_multiplier(risk, 0.0, 0.0) == 1.0)
+
+
+def test_stochastic_pressure_is_smooth_bounded_and_does_not_hard_saturate():
+    ratios = torch.tensor([0.0, 0.1, 1.0, 3.0, 10.0])
+    pressure = stochastic_pressure_from_ratio(ratios)
+    expected = ratios / (1.0 + ratios)
+    torch.testing.assert_close(pressure, expected)
+    assert torch.all(pressure[1:] > pressure[:-1])
+    assert pressure[-1] < 1.0
 
 
 def test_correction_insufficient_history_returns_raw_identity():
@@ -124,7 +134,7 @@ def test_stream_layout_rejects_stale_shape():
         StreamLayout(8).split(torch.zeros((1, 8)))
 
 
-def test_stochastic_history_is_stream_specific():
+def test_stochastic_history_is_stream_specific_and_separate_from_trajectory_risk():
     history = TrajectoryHistory()
     history.previous_stochastic_ratios = {
         "video": torch.tensor(0.1),
@@ -132,6 +142,24 @@ def test_stochastic_history_is_stream_specific():
     }
     raw = torch.ones((1, 4))
     observation = history.observe(raw, 2.0, 1.0, StreamLayout(2), None, None, raw, 1.0)
-    assert observation.stream_risks["video"].item() == pytest.approx(0.1)
-    assert observation.stream_risks["audio"].item() == pytest.approx(0.9)
-    assert observation.risk.item() == pytest.approx(0.9)
+
+    assert observation.trajectory_risk.item() == 0.0
+    assert observation.stream_trajectory_risks["video"].item() == 0.0
+    assert observation.stream_trajectory_risks["audio"].item() == 0.0
+    assert observation.stream_stochastic_pressures["video"].item() == pytest.approx(0.1 / 1.1)
+    assert observation.stream_stochastic_pressures["audio"].item() == pytest.approx(0.9 / 1.9)
+    assert observation.stream_risks["video"].item() == pytest.approx(0.1 / 1.1)
+    assert observation.stream_risks["audio"].item() == pytest.approx(0.9 / 1.9)
+    assert observation.risk.item() == pytest.approx(0.9 / 1.9)
+    assert observation.components["audio"]["previous_native_stochastic_ratio"].item() == pytest.approx(0.9)
+
+
+def test_missing_stochastic_ratio_does_not_create_frozen_stream_risk_floor():
+    history = TrajectoryHistory()
+    history.previous_stochastic_ratios = {"video": torch.tensor(2.0)}
+    raw = torch.ones((1, 4))
+    observation = history.observe(raw, 2.0, 1.0, StreamLayout(2), None, None, raw, 1.0)
+
+    assert observation.stream_risks["video"].item() == pytest.approx(2.0 / 3.0)
+    assert observation.stream_risks["audio"].item() == 0.0
+    assert "previous_stochastic_pressure" not in observation.components["audio"]
