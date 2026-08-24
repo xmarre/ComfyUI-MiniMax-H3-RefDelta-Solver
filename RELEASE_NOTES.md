@@ -28,6 +28,7 @@
 - Use `torch.finfo(dtype).tiny` rather than numerical epsilon for the undefined-movement threshold so small legitimate BF16 movement remains measurable.
 - Record native and actually-applied stochastic RMS/ratios separately while continuing to publish the exact post-gate increment to Spectrum.
 - Preserve the last valid actual-model native stochastic/movement evidence across Spectrum forecast gaps. Forecasts neither invent new pressure evidence nor erase the previous actual measurement; the next actual evaluation replaces or clears it normally.
+- Refresh the cached Spectrum forecast controller view immediately after an actual step measures its native stochastic/movement ratio. The current actual step keeps the risk/pressure that really controlled it, while the very next forecast consumes the newly available actual-only stochastic evidence instead of remaining one anchor stale.
 - Allow bounded trajectory correction to be applied to a Spectrum forecast using only the most recent actual-model raw anchor and actual-only derivative evidence. Forecast values remain excluded from `evidence_history` and can never become future correction/risk anchors.
 - Keep no-adaptation sampling numerically unchanged unless telemetry or calibration capture is explicitly enabled; the strict no-instrumentation baseline still delegates directly to native ComfyUI ER-SDE.
 
@@ -55,12 +56,13 @@ v0.2.0 adds explicit compatibility with Spectrum MiniMax H3 v0.2.20+ while prese
 
 - Solver history and RefDelta evidence history are separate. Spectrum forecasts remain valid ER-SDE solver values but never become risk or trajectory-correction anchors.
 - Spectrum forecast gaps preserve the last valid actual native stochastic/movement evidence instead of clearing it; only a later actual model evaluation may replace or clear that evidence.
+- A forecast immediately after an actual step now consumes the stochastic/movement evidence measured on that actual step; cached forecast state is refreshed without rewriting the current actual step's telemetry or committing any forecast value to evidence history.
 - Bounded trajectory correction may be applied to a forecast from the latest actual-only anchor and derivatives without committing the forecast to evidence history.
 - Spectrum classifies actual, forecast, and offline-replay source steps through a structural bridge with no hard runtime dependency from RefDelta to Spectrum.
 - RefDelta publishes the exact post-adaptation stochastic increment for Spectrum compensation and replay ownership.
 - Native-equivalence mode retains direct delegation to current ComfyUI ER-SDE.
 - Reference diagnostic results under Spectrum are matched to actual calls by sigma, avoiding stale sampler-ordinal failures after forecast steps.
 - Invalid or mismatched bridge state fails explicitly instead of silently contaminating history or stochastic ownership.
-- The native fixture matrix verifies that marked forecasts stay out of RefDelta evidence commits and preserve actual-only control evidence across forecast gaps.
+- The native fixture matrix verifies that marked forecasts stay out of RefDelta evidence commits, preserve actual-only evidence across forecast gaps, and consume the stochastic evidence measured by the immediately preceding actual step.
 
 The implementation is experimental until representative rank-1024 GPU calibration and held-out media validation are completed.
