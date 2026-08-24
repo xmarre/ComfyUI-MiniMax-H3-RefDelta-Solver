@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "comfyui-minimax-h3-refdelta-solver"
 description = "A RefDelta-aware ER-SDE sampler and calibrated scheduler for MiniMax-H3 rank-limited fused checkpoints."
-version = "0.1.0"
+version = "0.2.0"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -42,4 +42,3 @@ comfyui_refdelta_solver = ["profiles/*.json"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
-

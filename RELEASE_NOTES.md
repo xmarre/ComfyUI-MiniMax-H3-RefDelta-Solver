@@ -1,6 +1,6 @@
-# MiniMax H3 RefDelta Solver v0.1.0
+# MiniMax H3 RefDelta Solver v0.2.0
 
-The initial experimental release provides a standalone rank-1024 RefDelta-aware custom sampling path for current ComfyUI.
+v0.2.0 adds explicit compatibility with Spectrum MiniMax H3 v0.2.18+ while preserving RefDelta's actual-anchor evidence rules and adaptive stochastic path.
 
 ## Solver
 
@@ -20,6 +20,11 @@ The initial experimental release provides a standalone rank-1024 RefDelta-aware 
 
 ## Compatibility
 
-This release is standalone and deliberately does not claim Spectrum compatibility. Spectrum's native ER-SDE identity/digest and stochastic-ownership contract do not admit this adaptive sampler.
+- Solver history and RefDelta evidence history are separate. Spectrum forecasts remain valid ER-SDE solver values but never become risk or trajectory-correction anchors.
+- Spectrum classifies actual, forecast, and offline-replay source steps through a structural bridge with no hard runtime dependency from RefDelta to Spectrum.
+- RefDelta publishes the exact post-adaptation stochastic increment for Spectrum compensation and replay ownership.
+- Native-equivalence mode retains direct delegation to current ComfyUI ER-SDE.
+- Reference diagnostic results under Spectrum are matched to actual calls by sigma, avoiding stale sampler-ordinal failures after forecast steps.
+- Invalid or mismatched bridge state fails explicitly instead of silently contaminating history or stochastic ownership.
 
 The implementation is experimental until representative rank-1024 GPU calibration and held-out media validation are completed.

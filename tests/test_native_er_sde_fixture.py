@@ -7,8 +7,14 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import comfyui_refdelta_solver.sampler as sampler_module
 from comfyui_refdelta_solver.config import RefDeltaSamplerConfig
 from comfyui_refdelta_solver.sampler import sample_refdelta_er_sde
+from comfyui_refdelta_solver.spectrum_interop import (
+    SPECTRUM_BRIDGE_KEY,
+    SPECTRUM_INTEROP_CONTRACT,
+)
+from comfyui_refdelta_solver.trajectory import TrajectoryHistory
 
 
 def _required_comfy_module(name: str):
@@ -78,3 +84,53 @@ def test_instrumented_no_adaptation_matches_current_native_er_sde(tmp_path, monk
 
     torch.testing.assert_close(instrumented, native, rtol=2e-6, atol=2e-7)
     assert len(list((tmp_path / "refdelta_telemetry").glob("native-fixture-*.jsonl"))) == 1
+
+
+def test_spectrum_forecasts_never_commit_to_refdelta_evidence_history(monkeypatch):
+    histories = []
+
+    class SpyHistory(TrajectoryHistory):
+        def __init__(self):
+            super().__init__()
+            self.committed_coordinates = []
+            histories.append(self)
+
+        def commit(self, raw, coordinate, first):
+            self.committed_coordinates.append(coordinate)
+            return super().commit(raw, coordinate, first)
+
+    class Bridge:
+        api_version = 1
+        interop_contract = SPECTRUM_INTEROP_CONTRACT
+
+        @staticmethod
+        def model_result_is_actual(step_id):
+            return step_id != 2
+
+        @staticmethod
+        def publish_stochastic_increment(_step_id, _increment):
+            raise AssertionError("deterministic fixture must not publish noise")
+
+    monkeypatch.setattr(sampler_module, "TrajectoryHistory", SpyHistory)
+    initial = torch.tensor([[0.2, -0.1, 0.4, -0.3]], dtype=torch.float32)
+    sigmas = torch.tensor([1.0, 0.72, 0.47, 0.23, 0.0], dtype=torch.float32)
+    sample_refdelta_er_sde(
+        _Model(),
+        initial,
+        sigmas,
+        extra_args={
+            "seed": 7,
+            "model_options": {
+                "transformer_options": {SPECTRUM_BRIDGE_KEY: Bridge()}
+            },
+        },
+        disable=True,
+        s_noise=0.0,
+        config=RefDeltaSamplerConfig(),
+    )
+
+    assert len(histories) == 2
+    solver_history, evidence_history = histories
+    assert len(solver_history.committed_coordinates) == 3
+    assert len(evidence_history.committed_coordinates) == 2
+    assert solver_history.committed_coordinates[2] not in evidence_history.committed_coordinates

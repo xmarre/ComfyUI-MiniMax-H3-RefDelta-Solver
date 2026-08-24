@@ -7,8 +7,20 @@ from typing import Any
 import torch
 
 from .config import RefDeltaSamplerConfig
-from .coordinates import effective_audio_sigma, endpoint_gate
+from .coordinates import (
+    divided_difference,
+    effective_audio_sigma,
+    endpoint_gate,
+    second_divided_difference,
+)
 from .diagnostics import compare_same_state, consume_reference_result
+from .spectrum_interop import (
+    SPECTRUM_INTEROP_CONTRACT,
+    SpectrumInteropError,
+    model_result_is_actual,
+    publish_stochastic_increment,
+    spectrum_bridge,
+)
 from .telemetry import TelemetryWriter
 from .trajectory import (
     StreamLayout,
@@ -121,14 +133,25 @@ def sample_refdelta_er_sde(
     er_lambdas = half_log_snrs.neg().exp()
     coordinates = [float(value) for value in er_lambdas.detach().float().cpu()]
 
-    history = TrajectoryHistory()
+    # Solver history follows every value returned to ER-SDE, including a Spectrum
+    # forecast. Evidence history accepts only genuine model evaluations, so a
+    # forecast can never become a RefDelta risk or correction anchor.
+    solver_history = TrajectoryHistory()
+    evidence_history = TrajectoryHistory()
+    last_actual_observation = None
+    bridge = spectrum_bridge(extra_args)
     writer = _telemetry_writer(config, extra_args)
     total_steps = len(sigmas) - 1
     try:
         for i in trange(total_steps, disable=disable):
             x_current = x
             raw_denoised = model(x_current, sigmas[i] * s_in, **extra_args)
-            reference_denoised = consume_reference_result(model, i, sigmas[i] * s_in)
+            result_is_actual = model_result_is_actual(bridge, i)
+            reference_denoised = consume_reference_result(
+                model,
+                i if bridge is None else None,
+                sigmas[i] * s_in,
+            )
             if callback is not None:
                 callback({"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i], "denoised": raw_denoised})
 
@@ -151,16 +174,23 @@ def sample_refdelta_er_sde(
             if sigmas[i + 1] == 0:
                 x = raw_denoised
                 if writer is not None:
-                    terminal_observation = history.observe(
-                        raw_denoised,
-                        coordinates[i],
-                        coordinates[i + 1],
-                        layout,
-                        None,
-                        None,
-                        raw_denoised,
-                        config.risk_sensitivity,
-                    )
+                    if result_is_actual:
+                        terminal_observation = evidence_history.observe(
+                            raw_denoised,
+                            coordinates[i],
+                            coordinates[i + 1],
+                            layout,
+                            None,
+                            None,
+                            raw_denoised,
+                            config.risk_sensitivity,
+                        )
+                    elif last_actual_observation is not None:
+                        terminal_observation = last_actual_observation
+                    else:
+                        raise SpectrumInteropError(
+                            "Spectrum forecast before RefDelta established an actual anchor"
+                        )
                     record["effective_order"] = 1
                     record["risk"] = terminal_observation.risk
                     record["stream_risk"] = terminal_observation.stream_risks
@@ -188,41 +218,90 @@ def sample_refdelta_er_sde(
 
             first = None
             second = None
+            evidence_first = None
+            evidence_second = None
             stage2 = None
             stage3 = None
-            if history.previous_raw is not None and history.previous_coordinate is not None:
-                span = lambda_s - history.previous_coordinate
-                scale = max(abs(lambda_s), abs(history.previous_coordinate), 1.0)
+            if solver_history.previous_raw is not None and solver_history.previous_coordinate is not None:
+                span = lambda_s - solver_history.previous_coordinate
+                scale = max(abs(lambda_s), abs(solver_history.previous_coordinate), 1.0)
                 if math.isfinite(span) and abs(span) > 1e-12 * scale:
-                    first = torch.nan_to_num((raw_denoised - history.previous_raw) / span)
-            if first is not None and history.previous_first is not None and history.two_back_coordinate is not None:
-                span = lambda_s - history.two_back_coordinate
-                scale = max(abs(lambda_s), abs(history.two_back_coordinate), 1.0)
+                    first = torch.nan_to_num((raw_denoised - solver_history.previous_raw) / span)
+            if first is not None and solver_history.previous_first is not None and solver_history.two_back_coordinate is not None:
+                span = lambda_s - solver_history.two_back_coordinate
+                scale = max(abs(lambda_s), abs(solver_history.two_back_coordinate), 1.0)
                 if math.isfinite(span) and abs(span) > 1e-12 * scale:
-                    second = torch.nan_to_num(2.0 * (first - history.previous_first) / span)
+                    second = torch.nan_to_num(2.0 * (first - solver_history.previous_first) / span)
+
+            if (
+                result_is_actual
+                and evidence_history.previous_raw is not None
+                and evidence_history.previous_coordinate is not None
+            ):
+                evidence_first = divided_difference(
+                    raw_denoised,
+                    evidence_history.previous_raw,
+                    lambda_s,
+                    evidence_history.previous_coordinate,
+                )
+            if (
+                evidence_first is not None
+                and evidence_history.previous_first is not None
+                and evidence_history.two_back_coordinate is not None
+            ):
+                evidence_second = second_divided_difference(
+                    evidence_first,
+                    evidence_history.previous_first,
+                    lambda_s,
+                    evidence_history.two_back_coordinate,
+                )
 
             dt = er_lambda_t - er_lambda_s
-            if first is not None and max_stage >= 2:
+            stage2_coefficient = None
+            stage3_coefficient = None
+            if (first is not None or evidence_first is not None) and max_stage >= 2:
                 lambda_step_size = -dt / num_integration_points
                 lambda_pos = er_lambda_t + point_indices * lambda_step_size
                 scaled_pos = noise_scaler(lambda_pos)
                 integral = torch.sum(1.0 / scaled_pos) * lambda_step_size
-                stage2 = alpha_t * (dt + integral * noise_scaler(er_lambda_t)) * first
-                if second is not None and max_stage >= 3:
+                stage2_coefficient = alpha_t * (dt + integral * noise_scaler(er_lambda_t))
+                if first is not None:
+                    stage2 = stage2_coefficient * first
+                if (second is not None or evidence_second is not None) and max_stage >= 3:
                     integral_u = torch.sum((lambda_pos - er_lambda_s) / scaled_pos) * lambda_step_size
-                    stage3 = alpha_t * ((dt ** 2) / 2.0 + integral_u * noise_scaler(er_lambda_t)) * second
+                    stage3_coefficient = alpha_t * ((dt ** 2) / 2.0 + integral_u * noise_scaler(er_lambda_t))
+                    if second is not None:
+                        stage3 = stage3_coefficient * second
 
             stage1_raw = stage1_coefficient * raw_denoised
-            observation = history.observe(
-                raw_denoised,
-                lambda_s,
-                lambda_t,
-                layout,
-                stage2,
-                stage3,
-                stage1_raw,
-                config.risk_sensitivity,
-            )
+            if result_is_actual:
+                evidence_stage2 = (
+                    None
+                    if stage2_coefficient is None or evidence_first is None
+                    else stage2_coefficient * evidence_first
+                )
+                evidence_stage3 = (
+                    None
+                    if stage3_coefficient is None or evidence_second is None
+                    else stage3_coefficient * evidence_second
+                )
+                observation = evidence_history.observe(
+                    raw_denoised,
+                    lambda_s,
+                    lambda_t,
+                    layout,
+                    evidence_stage2,
+                    evidence_stage3,
+                    stage1_raw,
+                    config.risk_sensitivity,
+                )
+                last_actual_observation = observation
+            elif last_actual_observation is None:
+                raise SpectrumInteropError(
+                    "Spectrum forecast before RefDelta established an actual anchor"
+                )
+            else:
+                observation = last_actual_observation
             stage2_gate, stage3_gate = adaptive_order_gates(observation.risk, config.adaptive_order)
             endpoint = endpoint_gate(i, total_steps, config.endpoint_fidelity_fraction, raw_denoised)
             corrected_denoised = raw_denoised
@@ -230,9 +309,9 @@ def sample_refdelta_er_sde(
             if config.trajectory_correction:
                 corrected_denoised, correction_norms = bounded_trajectory_correction(
                     raw_denoised,
-                    history.previous_raw,
-                    first,
-                    second,
+                    evidence_history.previous_raw if result_is_actual else None,
+                    observation.first if result_is_actual else None,
+                    observation.second if result_is_actual else None,
                     lambda_t - lambda_s,
                     layout,
                     config.video_correction_strength,
@@ -262,12 +341,13 @@ def sample_refdelta_er_sde(
                 stochastic_scale = (er_lambda_t ** 2 - er_lambda_s ** 2 * r ** 2).sqrt().nan_to_num(nan=0.0)
                 stochastic = alpha_t * noise_sampler(sigmas[i], sigmas[i + 1]) * effective_s_noise * stochastic_scale * stochastic_gate
                 x = x + stochastic
+                publish_stochastic_increment(bridge, i, stochastic)
 
-            previous_raw = history.previous_raw
-            if stochastic is not None and previous_raw is not None:
+            previous_raw = evidence_history.previous_raw
+            if result_is_actual and stochastic is not None and previous_raw is not None:
                 stochastic_streams = layout.split(stochastic)
                 movement_streams = layout.split(raw_denoised - previous_raw)
-                history.previous_stochastic_ratios = {
+                evidence_history.previous_stochastic_ratios = {
                     name: torch.nan_to_num(
                         rms(stream) / rms(movement_streams[name]).clamp_min(torch.finfo(stream.dtype).eps),
                         nan=0.0,
@@ -276,9 +356,11 @@ def sample_refdelta_er_sde(
                     for name, stream in stochastic_streams.items()
                 }
             else:
-                history.previous_stochastic_ratios = None
+                evidence_history.previous_stochastic_ratios = None
 
-            history.commit(raw_denoised, lambda_s, first)
+            solver_history.commit(raw_denoised, lambda_s, first)
+            if result_is_actual:
+                evidence_history.commit(raw_denoised, lambda_s, observation.first)
 
             if writer is not None:
                 record.update({
@@ -315,10 +397,14 @@ def sample_refdelta_er_sde(
                     record["reference"] = compare_same_state(x_current, sigmas[i], raw_denoised, reference_denoised, layout)
                 writer.write(record)
     finally:
-        history.reset()
+        solver_history.reset()
+        evidence_history.reset()
         if writer is not None:
             writer.close()
     return x
+
+
+sample_refdelta_er_sde.__spectrum_interop_contract__ = SPECTRUM_INTEROP_CONTRACT
 
 
 __all__ = ["native_noise_scaler", "sample_refdelta_er_sde"]

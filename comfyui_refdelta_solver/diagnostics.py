@@ -150,13 +150,13 @@ class RefDeltaReferenceGuiderMixin:
                     delattr(self, attribute)
 
 
-def consume_reference_result(model, call_index: int, sigma: torch.Tensor) -> torch.Tensor | None:
+def consume_reference_result(model, call_index: int | None, sigma: torch.Tensor) -> torch.Tensor | None:
     guider = getattr(model, "inner_model", None)
     result = getattr(guider, "_refdelta_reference_result", None)
     if result is None:
         return None
     guider._refdelta_reference_result = None
-    if result.call_index != call_index:
+    if call_index is not None and result.call_index != call_index:
         raise RuntimeError(f"stale RefDelta reference result belongs to call {result.call_index}, current call is {call_index}")
     if result.sigma.shape != sigma.shape or not torch.allclose(result.sigma, sigma, rtol=1e-6, atol=1e-7):
         raise RuntimeError("RefDelta reference result belongs to a different sigma")

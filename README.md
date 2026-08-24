@@ -119,9 +119,16 @@ Judge the final media as well as the telemetry. Intermediate sharpness alone is 
 
 ## Spectrum compatibility
 
-This sampler is standalone. It is **not currently accepted by**
-[ComfyUI-Spectrum-MiniMax-H3](https://github.com/xmarre/ComfyUI-Spectrum-MiniMax-H3).
-Spectrum intentionally admits only the reviewed native `sample_er_sde` function identity/digest and owns stochastic compensation around skipped evaluations. This project changes both the sampler identity and its risk-dependent stochastic increment. Claiming compatibility would require a new explicit inter-project contract covering actual-anchor history, effective stage gates, and stochastic ownership. Until that contract exists, do not combine Spectrum forecasting with this sampler.
+RefDelta Solver v0.2.0 is compatible with
+[ComfyUI-Spectrum-MiniMax-H3 v0.2.18+](https://github.com/xmarre/ComfyUI-Spectrum-MiniMax-H3).
+The integration uses a fail-closed API-v1 contract:
+
+- Spectrum labels each sampler result as an actual evaluation or forecast. RefDelta keeps every result in ER-SDE's solver history, but only actual model outputs enter its risk and trajectory-correction history.
+- RefDelta publishes the exact stochastic tensor after its risk and endpoint gates. Spectrum owns that final tensor for skipped-state compensation and seeded offline replay, so noise is neither estimated from the native formula nor applied twice.
+- Native-equivalence mode continues to delegate to ComfyUI's reviewed `sample_er_sde` and uses Spectrum's native ER-SDE tracking path.
+- A missing, stale, or mismatched bridge fails explicitly; Spectrum rejects unreviewed RefDelta versions before forecasting.
+
+The same-state reference diagnostic remains valid: forecast steps produce no reference result, while actual reference results are matched by sigma rather than sampler-loop ordinal.
 
 ## Development
 
