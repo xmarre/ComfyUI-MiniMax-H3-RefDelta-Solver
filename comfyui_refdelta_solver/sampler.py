@@ -182,8 +182,9 @@ def sample_refdelta_er_sde(
     coordinates = [float(value) for value in er_lambdas.detach().float().cpu()]
 
     # Solver history follows every value returned to ER-SDE, including a Spectrum
-    # forecast. Evidence history accepts only genuine model evaluations, so a
-    # forecast can never become a RefDelta risk or correction anchor.
+    # forecast. Evidence history accepts only genuine model evaluations. Forecast
+    # values may consume the latest actual-only control evidence, but they never
+    # become risk, stochastic-pressure, or trajectory-correction anchors.
     solver_history = TrajectoryHistory()
     evidence_history = TrajectoryHistory()
     last_actual_observation = None
@@ -376,11 +377,13 @@ def sample_refdelta_er_sde(
             corrected_denoised = raw_denoised
             correction_norms: dict[str, torch.Tensor] = {}
             if config.trajectory_correction:
+                # Application may target a Spectrum forecast, but the steering
+                # vector and bound anchor remain derived from actual-model history.
                 corrected_denoised, correction_norms = bounded_trajectory_correction(
                     raw_denoised,
-                    evidence_history.previous_raw if result_is_actual else None,
-                    observation.first if result_is_actual else None,
-                    observation.second if result_is_actual else None,
+                    evidence_history.previous_raw,
+                    observation.first,
+                    observation.second,
                     lambda_t - lambda_s,
                     layout,
                     config.video_correction_strength,
@@ -422,17 +425,21 @@ def sample_refdelta_er_sde(
                 publish_stochastic_increment(bridge, i, stochastic)
 
             previous_raw = evidence_history.previous_raw
-            if result_is_actual and native_stochastic is not None and previous_raw is not None:
-                native_streams = layout.split(native_stochastic)
-                movement_streams = layout.split(raw_denoised - previous_raw)
-                ratios: dict[str, torch.Tensor] = {}
-                for name, stream in native_streams.items():
-                    ratio = _stochastic_movement_ratio(stream, movement_streams[name])
-                    if ratio is not None:
-                        ratios[name] = ratio.detach()
-                evidence_history.previous_stochastic_ratios = ratios or None
-            else:
-                evidence_history.previous_stochastic_ratios = None
+            if result_is_actual:
+                if native_stochastic is not None and previous_raw is not None:
+                    native_streams = layout.split(native_stochastic)
+                    movement_streams = layout.split(raw_denoised - previous_raw)
+                    ratios: dict[str, torch.Tensor] = {}
+                    for name, stream in native_streams.items():
+                        ratio = _stochastic_movement_ratio(stream, movement_streams[name])
+                        if ratio is not None:
+                            ratios[name] = ratio.detach()
+                    evidence_history.previous_stochastic_ratios = ratios or None
+                else:
+                    evidence_history.previous_stochastic_ratios = None
+            # A forecast contributes no new stochastic evidence. Preserve the
+            # most recent actual native stochastic/movement ratios until another
+            # actual model evaluation replaces or clears them.
 
             solver_history.commit(raw_denoised, lambda_s, first)
             if result_is_actual:
