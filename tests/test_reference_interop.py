@@ -55,6 +55,16 @@ def test_attach_reference_diagnostic_is_copy_on_write():
     assert REFERENCE_DIAGNOSTIC_MODEL_OPTION not in reference.model_options
 
 
+def test_attach_reference_diagnostic_rejects_identical_model_inputs():
+    model = FakeModel({"existing": "untouched"})
+
+    with pytest.raises(ValueError, match="distinct reference MODEL"):
+        attach_reference_diagnostic(model, model)
+
+    assert model.model_options == {"existing": "untouched"}
+    assert REFERENCE_DIAGNOSTIC_MODEL_OPTION not in model.model_options
+
+
 def test_attach_reference_diagnostic_rejects_recursive_reference_contract():
     fused = FakeModel()
     reference = FakeModel(
