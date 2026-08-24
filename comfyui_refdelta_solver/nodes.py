@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+from .calibration_replay import sample_refdelta_reference_replay
 from .config import RefDeltaSamplerConfig
 from .diagnostics import RefDeltaReferenceGuiderMixin
-from .reference_interop import attach_reference_diagnostic
 from .sampler import sample_refdelta_er_sde
 from .scheduler import load_profile, sigmas_from_profile
 
@@ -27,6 +27,8 @@ class MiniMaxH3RefDeltaSampler:
                 "max_stage": ("INT", {"default": 3, "min": 1, "max": 3, "step": 1, "advanced": True}),
                 "debug_telemetry": ("BOOLEAN", {"default": False, "advanced": True}),
                 "telemetry_prefix": ("STRING", {"default": "refdelta_trajectory", "advanced": True}),
+                "calibration_capture": ("BOOLEAN", {"default": False, "advanced": True}),
+                "calibration_id": ("STRING", {"default": "refdelta_calibration", "advanced": True}),
             }
         }
 
@@ -51,6 +53,8 @@ class MiniMaxH3RefDeltaSampler:
         max_stage,
         debug_telemetry,
         telemetry_prefix,
+        calibration_capture,
+        calibration_id,
     ):
         import comfy.samplers
 
@@ -66,11 +70,46 @@ class MiniMaxH3RefDeltaSampler:
             endpoint_fidelity_fraction=endpoint_fidelity_fraction,
             telemetry=debug_telemetry,
             telemetry_prefix=telemetry_prefix,
+            calibration_capture=calibration_capture,
+            calibration_id=calibration_id,
         )
         config.validate()
         return (comfy.samplers.KSAMPLER(
             sample_refdelta_er_sde,
             extra_options={"config": config, "s_noise": s_noise, "max_stage": max_stage},
+        ),)
+
+
+class MiniMaxH3RefDeltaReferenceReplaySampler:
+    """Evaluate one reference MODEL against states captured by the fused sampler."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "calibration_id": ("STRING", {"default": "refdelta_calibration"}),
+                "telemetry_prefix": ("STRING", {"default": "refdelta_reference_replay", "advanced": True}),
+            }
+        }
+
+    RETURN_TYPES = ("SAMPLER",)
+    RETURN_NAMES = ("sampler",)
+    FUNCTION = "build"
+    CATEGORY = "sampling/custom_sampling/samplers"
+    DESCRIPTION = (
+        "Second-pass calibration sampler. Replays exact captured fused states through the currently "
+        "loaded reference MODEL and returns the captured fused final latent so continuation stays exact."
+    )
+
+    def build(self, calibration_id, telemetry_prefix):
+        import comfy.samplers
+
+        return (comfy.samplers.KSAMPLER(
+            sample_refdelta_reference_replay,
+            extra_options={
+                "calibration_id": calibration_id,
+                "telemetry_prefix": telemetry_prefix,
+            },
         ),)
 
 
@@ -100,33 +139,8 @@ class MiniMaxH3RefDeltaScheduler:
         return (sigmas_from_profile(model_sampling, steps, denoise, calibration),)
 
 
-class MiniMaxH3RefDeltaReferenceDiagnosticModel:
-    """Attach a genuine Ref2VA model to the fused MODEL for runtime diagnostics."""
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "model": ("MODEL",),
-                "reference_model": ("MODEL",),
-            }
-        }
-
-    RETURN_TYPES = ("MODEL",)
-    RETURN_NAMES = ("model",)
-    FUNCTION = "build"
-    CATEGORY = "sampling/custom_sampling/guiders"
-    DESCRIPTION = (
-        "Attach a genuine Ref2VA MODEL for same-state RefDelta calibration. Compatible runtimes "
-        "such as H3 Continuum build the diagnostic guider from their exact per-chunk conditioning."
-    )
-
-    def build(self, model, reference_model):
-        return (attach_reference_diagnostic(model, reference_model),)
-
-
 class MiniMaxH3RefDeltaReferenceGuider:
-    """Legacy explicit-guider diagnostic retained for saved workflows."""
+    """Legacy simultaneous dual-model diagnostic retained for saved workflows."""
 
     DEPRECATED = True
 
@@ -146,10 +160,16 @@ class MiniMaxH3RefDeltaReferenceGuider:
     RETURN_NAMES = ("guider",)
     FUNCTION = "build"
     CATEGORY = "sampling/custom_sampling/guiders"
-    DESCRIPTION = "Legacy explicit diagnostic guider. Prefer the model-level Reference Diagnostic for Continuum calibration."
+    DESCRIPTION = (
+        "Legacy simultaneous dual-model diagnostic. It may require both full H3 models resident; "
+        "prefer Calibration Capture + Reference Replay."
+    )
 
     def build(self, model, reference_model, positive, negative, cfg):
         import comfy.samplers
+
+        if model is reference_model:
+            raise ValueError("RefDelta reference diagnostic requires a distinct reference MODEL")
 
         class RefDeltaReferenceGuider(RefDeltaReferenceGuiderMixin, comfy.samplers.CFGGuider):
             pass
@@ -163,14 +183,14 @@ class MiniMaxH3RefDeltaReferenceGuider:
 
 NODE_CLASS_MAPPINGS = {
     "MiniMaxH3RefDeltaSampler": MiniMaxH3RefDeltaSampler,
+    "MiniMaxH3RefDeltaReferenceReplaySampler": MiniMaxH3RefDeltaReferenceReplaySampler,
     "MiniMaxH3RefDeltaScheduler": MiniMaxH3RefDeltaScheduler,
-    "MiniMaxH3RefDeltaReferenceDiagnosticModel": MiniMaxH3RefDeltaReferenceDiagnosticModel,
     "MiniMaxH3RefDeltaReferenceGuider": MiniMaxH3RefDeltaReferenceGuider,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3RefDeltaSampler": "MiniMax H3 RefDelta Sampler",
+    "MiniMaxH3RefDeltaReferenceReplaySampler": "MiniMax H3 RefDelta Reference Replay",
     "MiniMaxH3RefDeltaScheduler": "MiniMax H3 RefDelta Scheduler",
-    "MiniMaxH3RefDeltaReferenceDiagnosticModel": "MiniMax H3 RefDelta Reference Diagnostic",
     "MiniMaxH3RefDeltaReferenceGuider": "[Legacy] MiniMax H3 RefDelta Reference Guider",
 }
