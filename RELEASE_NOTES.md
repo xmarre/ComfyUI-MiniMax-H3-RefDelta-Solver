@@ -26,5 +26,6 @@ v0.2.0 adds explicit compatibility with Spectrum MiniMax H3 v0.2.18+ while prese
 - Native-equivalence mode retains direct delegation to current ComfyUI ER-SDE.
 - Reference diagnostic results under Spectrum are matched to actual calls by sigma, avoiding stale sampler-ordinal failures after forecast steps.
 - Invalid or mismatched bridge state fails explicitly instead of silently contaminating history or stochastic ownership.
+- The native fixture matrix verifies that marked forecasts stay out of RefDelta evidence commits.
 
 The implementation is experimental until representative rank-1024 GPU calibration and held-out media validation are completed.
