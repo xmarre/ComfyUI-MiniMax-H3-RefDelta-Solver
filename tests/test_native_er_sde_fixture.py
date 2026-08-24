@@ -134,3 +134,154 @@ def test_spectrum_forecasts_never_commit_to_refdelta_evidence_history(monkeypatc
     assert len(solver_history.committed_coordinates) == 3
     assert len(evidence_history.committed_coordinates) == 2
     assert solver_history.committed_coordinates[2] not in evidence_history.committed_coordinates
+
+
+def test_spectrum_forecast_preserves_last_actual_stochastic_evidence(monkeypatch):
+    histories = []
+    published_steps = []
+
+    class SpyHistory(TrajectoryHistory):
+        def __init__(self):
+            super().__init__()
+            self.stochastic_ratios_seen = []
+            histories.append(self)
+
+        def observe(self, *args, **kwargs):
+            ratios = self.previous_stochastic_ratios
+            snapshot = (
+                None
+                if ratios is None
+                else {name: value.detach().clone() for name, value in ratios.items()}
+            )
+            self.stochastic_ratios_seen.append(snapshot)
+            return super().observe(*args, **kwargs)
+
+    class Bridge:
+        api_version = 1
+        interop_contract = SPECTRUM_INTEROP_CONTRACT
+
+        @staticmethod
+        def model_result_is_actual(step_id):
+            return step_id != 2
+
+        @staticmethod
+        def publish_stochastic_increment(step_id, _increment):
+            published_steps.append(step_id)
+
+    monkeypatch.setattr(sampler_module, "TrajectoryHistory", SpyHistory)
+    initial = torch.tensor([[0.2, -0.1, 0.4, -0.3]], dtype=torch.float32)
+    sigmas = torch.tensor([1.0, 0.82, 0.64, 0.46, 0.28, 0.0], dtype=torch.float32)
+    sample_refdelta_er_sde(
+        _Model(),
+        initial,
+        sigmas,
+        extra_args={
+            "seed": 7,
+            "model_options": {
+                "transformer_options": {SPECTRUM_BRIDGE_KEY: Bridge()}
+            },
+        },
+        disable=True,
+        s_noise=0.8,
+        noise_sampler=_fixed_noise(initial),
+        config=RefDeltaSamplerConfig(
+            adaptive_order=False,
+            stochastic_adaptation_strength=0.5,
+            minimum_stochastic_multiplier=0.5,
+            trajectory_correction=False,
+        ),
+    )
+
+    assert len(histories) == 2
+    _, evidence_history = histories
+    # Step 1 establishes native stochastic/movement evidence. Step 2 is a
+    # Spectrum forecast, so step 3 must still observe that last actual evidence.
+    assert len(evidence_history.stochastic_ratios_seen) >= 3
+    after_forecast = evidence_history.stochastic_ratios_seen[2]
+    assert after_forecast is not None
+    assert set(after_forecast) == {"video", "audio"}
+    assert all(torch.isfinite(value) and value > 0 for value in after_forecast.values())
+    assert 2 in published_steps
+
+
+def test_spectrum_forecast_applies_correction_from_actual_only_evidence(monkeypatch):
+    correction_calls = []
+    original_correction = sampler_module.bounded_trajectory_correction
+
+    def correction_spy(
+        raw,
+        previous_raw,
+        first,
+        second,
+        next_span,
+        layout,
+        video_strength,
+        audio_strength,
+        bound,
+        gate,
+    ):
+        correction_calls.append(
+            {
+                "previous_raw": previous_raw,
+                "first": first,
+                "second": second,
+            }
+        )
+        return original_correction(
+            raw,
+            previous_raw,
+            first,
+            second,
+            next_span,
+            layout,
+            video_strength,
+            audio_strength,
+            bound,
+            gate,
+        )
+
+    class Bridge:
+        api_version = 1
+        interop_contract = SPECTRUM_INTEROP_CONTRACT
+
+        @staticmethod
+        def model_result_is_actual(step_id):
+            return step_id != 2
+
+        @staticmethod
+        def publish_stochastic_increment(_step_id, _increment):
+            raise AssertionError("deterministic fixture must not publish noise")
+
+    monkeypatch.setattr(
+        sampler_module,
+        "bounded_trajectory_correction",
+        correction_spy,
+    )
+    initial = torch.tensor([[0.2, -0.1, 0.4, -0.3]], dtype=torch.float32)
+    sigmas = torch.tensor([1.0, 0.72, 0.47, 0.23, 0.0], dtype=torch.float32)
+    sample_refdelta_er_sde(
+        _Model(),
+        initial,
+        sigmas,
+        extra_args={
+            "seed": 7,
+            "model_options": {
+                "transformer_options": {SPECTRUM_BRIDGE_KEY: Bridge()}
+            },
+        },
+        disable=True,
+        s_noise=0.0,
+        config=RefDeltaSamplerConfig(
+            adaptive_order=False,
+            stochastic_adaptation_strength=0.0,
+            trajectory_correction=True,
+        ),
+    )
+
+    # Nonterminal calls correspond to steps 0, 1, and forecast step 2. By step
+    # 2 there are two actual anchors, so correction can steer the forecast using
+    # the last actual raw x0 and its actual-only first derivative.
+    assert len(correction_calls) == 3
+    forecast_call = correction_calls[2]
+    assert forecast_call["previous_raw"] is not None
+    assert forecast_call["first"] is not None
