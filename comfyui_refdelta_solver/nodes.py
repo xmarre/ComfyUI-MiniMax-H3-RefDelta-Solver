@@ -4,6 +4,7 @@ from typing import ClassVar
 
 from .config import RefDeltaSamplerConfig
 from .diagnostics import RefDeltaReferenceGuiderMixin
+from .reference_interop import attach_reference_diagnostic
 from .sampler import sample_refdelta_er_sde
 from .scheduler import load_profile, sigmas_from_profile
 
@@ -99,7 +100,36 @@ class MiniMaxH3RefDeltaScheduler:
         return (sigmas_from_profile(model_sampling, steps, denoise, calibration),)
 
 
+class MiniMaxH3RefDeltaReferenceDiagnosticModel:
+    """Attach a genuine Ref2VA model to the fused MODEL for runtime diagnostics."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "reference_model": ("MODEL",),
+            }
+        }
+
+    RETURN_TYPES = ("MODEL",)
+    RETURN_NAMES = ("model",)
+    FUNCTION = "build"
+    CATEGORY = "sampling/custom_sampling/guiders"
+    DESCRIPTION = (
+        "Attach a genuine Ref2VA MODEL for same-state RefDelta calibration. Compatible runtimes "
+        "such as H3 Continuum build the diagnostic guider from their exact per-chunk conditioning."
+    )
+
+    def build(self, model, reference_model):
+        return (attach_reference_diagnostic(model, reference_model),)
+
+
 class MiniMaxH3RefDeltaReferenceGuider:
+    """Legacy explicit-guider diagnostic retained for saved workflows."""
+
+    DEPRECATED = True
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -116,7 +146,7 @@ class MiniMaxH3RefDeltaReferenceGuider:
     RETURN_NAMES = ("guider",)
     FUNCTION = "build"
     CATEGORY = "sampling/custom_sampling/guiders"
-    DESCRIPTION = "Expensive diagnostic guider that evaluates fused and genuine Ref2VA models on the same state, sigma, prompt, and references."
+    DESCRIPTION = "Legacy explicit diagnostic guider. Prefer the model-level Reference Diagnostic for Continuum calibration."
 
     def build(self, model, reference_model, positive, negative, cfg):
         import comfy.samplers
@@ -134,11 +164,13 @@ class MiniMaxH3RefDeltaReferenceGuider:
 NODE_CLASS_MAPPINGS = {
     "MiniMaxH3RefDeltaSampler": MiniMaxH3RefDeltaSampler,
     "MiniMaxH3RefDeltaScheduler": MiniMaxH3RefDeltaScheduler,
+    "MiniMaxH3RefDeltaReferenceDiagnosticModel": MiniMaxH3RefDeltaReferenceDiagnosticModel,
     "MiniMaxH3RefDeltaReferenceGuider": MiniMaxH3RefDeltaReferenceGuider,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3RefDeltaSampler": "MiniMax H3 RefDelta Sampler",
     "MiniMaxH3RefDeltaScheduler": "MiniMax H3 RefDelta Scheduler",
-    "MiniMaxH3RefDeltaReferenceGuider": "MiniMax H3 RefDelta Reference Diagnostic",
+    "MiniMaxH3RefDeltaReferenceDiagnosticModel": "MiniMax H3 RefDelta Reference Diagnostic",
+    "MiniMaxH3RefDeltaReferenceGuider": "[Legacy] MiniMax H3 RefDelta Reference Guider",
 }
