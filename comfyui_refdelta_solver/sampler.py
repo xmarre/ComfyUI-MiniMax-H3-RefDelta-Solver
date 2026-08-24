@@ -6,6 +6,7 @@ from typing import Any
 
 import torch
 
+from .calibration_replay import CalibrationCaptureWriter
 from .config import RefDeltaSamplerConfig
 from .coordinates import (
     divided_difference,
@@ -73,6 +74,28 @@ def _telemetry_writer(config: RefDeltaSamplerConfig, extra_args: dict[str, Any])
     return TelemetryWriter(output, config.telemetry_prefix, extra_args.get("seed"))
 
 
+def _calibration_capture_writer(
+    config: RefDeltaSamplerConfig,
+    extra_args: dict[str, Any],
+    x: torch.Tensor,
+    sigmas: torch.Tensor,
+    layout: StreamLayout,
+) -> CalibrationCaptureWriter | None:
+    if not config.calibration_capture:
+        return None
+    import folder_paths
+
+    return CalibrationCaptureWriter(
+        Path(folder_paths.get_output_directory()),
+        config.calibration_id,
+        extra_args.get("seed"),
+        len(sigmas) - 1,
+        tuple(x.shape),
+        sigmas,
+        layout,
+    )
+
+
 def _record_stream_norms(record: dict[str, Any], prefix: str, value: torch.Tensor, layout: StreamLayout) -> None:
     for name, stream in layout.split(value).items():
         record.setdefault(name, {})[prefix] = rms(stream)
@@ -84,11 +107,23 @@ def _stochastic_movement_ratio(
 ) -> torch.Tensor | None:
     """Return stochastic/movement RMS only when movement defines a useful denominator."""
     denominator = rms(movement)
-    eps = torch.finfo(movement.dtype).eps
-    if not bool(torch.isfinite(denominator)) or bool(denominator <= eps):
+    tiny = torch.finfo(movement.dtype).tiny
+    if not bool(torch.isfinite(denominator)) or bool(denominator <= tiny):
         return None
     ratio = rms(stochastic) / denominator
     return torch.nan_to_num(ratio, nan=0.0, posinf=1e9, neginf=0.0).clamp_min(0.0)
+
+
+def _write_record(
+    writer: TelemetryWriter | None,
+    capture: CalibrationCaptureWriter | None,
+    step: int,
+    record: dict[str, Any],
+) -> None:
+    if writer is not None:
+        writer.write(record)
+    if capture is not None:
+        capture.write_record(step, record)
 
 
 @torch.no_grad()
@@ -154,12 +189,22 @@ def sample_refdelta_er_sde(
     last_actual_observation = None
     bridge = spectrum_bridge(extra_args)
     writer = _telemetry_writer(config, extra_args)
+    capture = _calibration_capture_writer(config, extra_args, x, sigmas, layout)
+    recording = writer is not None or capture is not None
     total_steps = len(sigmas) - 1
+    completed = False
     try:
         for i in trange(total_steps, disable=disable):
             x_current = x
             raw_denoised = model(x_current, sigmas[i] * s_in, **extra_args)
             result_is_actual = model_result_is_actual(bridge, i)
+            if capture is not None:
+                capture.write_step(
+                    i,
+                    x_current,
+                    raw_denoised,
+                    actual=result_is_actual,
+                )
             reference_denoised = consume_reference_result(
                 model,
                 i if bridge is None else None,
@@ -171,6 +216,7 @@ def sample_refdelta_er_sde(
             record: dict[str, Any] = {
                 "step": i,
                 "steps": total_steps,
+                "actual_model_evaluation": result_is_actual,
                 "sigma": sigmas[i],
                 "sigma_next": sigmas[i + 1],
                 "er_lambda": er_lambdas[i],
@@ -180,13 +226,13 @@ def sample_refdelta_er_sde(
                 "sigma_min": model_sampling.sigma_min,
                 "sigma_max": model_sampling.sigma_max,
             }
-            if writer is not None:
+            if recording:
                 _record_stream_norms(record, "latent_rms", x, layout)
                 _record_stream_norms(record, "denoised_rms", raw_denoised, layout)
 
             if sigmas[i + 1] == 0:
                 x = raw_denoised
-                if writer is not None:
+                if recording:
                     if result_is_actual:
                         terminal_observation = evidence_history.observe(
                             raw_denoised,
@@ -222,7 +268,7 @@ def sample_refdelta_er_sde(
                         _record_stream_norms(record, "second_derivative_rms", terminal_observation.second, layout)
                     if reference_denoised is not None:
                         record["reference"] = compare_same_state(x_current, sigmas[i], raw_denoised, reference_denoised, layout)
-                    writer.write(record)
+                    _write_record(writer, capture, i, record)
                 continue
 
             er_lambda_s, er_lambda_t = er_lambdas[i], er_lambdas[i + 1]
@@ -392,7 +438,7 @@ def sample_refdelta_er_sde(
             if result_is_actual:
                 evidence_history.commit(raw_denoised, lambda_s, observation.first)
 
-            if writer is not None:
+            if recording:
                 record.update({
                     "terminal": False,
                     "risk": observation.risk,
@@ -456,12 +502,18 @@ def sample_refdelta_er_sde(
                         values["stochastic_to_denoised_movement"] = applied_ratio
                 if reference_denoised is not None:
                     record["reference"] = compare_same_state(x_current, sigmas[i], raw_denoised, reference_denoised, layout)
-                writer.write(record)
+                _write_record(writer, capture, i, record)
+        completed = True
     finally:
         solver_history.reset()
         evidence_history.reset()
         if writer is not None:
             writer.close()
+        if capture is not None:
+            if completed:
+                capture.close(x)
+            else:
+                capture.abort()
     return x
 
 
