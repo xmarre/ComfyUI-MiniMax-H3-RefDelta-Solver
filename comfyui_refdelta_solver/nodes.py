@@ -1,18 +1,43 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import ClassVar
 
 from .calibration_replay import (
     sample_refdelta_comparison_replay,
     sample_refdelta_reference_replay,
 )
-from .config import RefDeltaSamplerConfig
+from .config import (
+    PRODUCTION_STABILITY_DEFAULTS,
+    PRODUCTION_STABILITY_PRESET_ID,
+    RefDeltaSamplerConfig,
+    production_stability_config,
+)
 from .diagnostics import RefDeltaReferenceGuiderMixin
 from .sampler import sample_refdelta_er_sde
 from .scheduler import load_profile, sigmas_from_profile
 
 
+def _ksampler(config: RefDeltaSamplerConfig, s_noise: float, max_stage: int):
+    import comfy.samplers
+
+    config.validate()
+    return (
+        comfy.samplers.KSAMPLER(
+            sample_refdelta_er_sde,
+            extra_options={"config": config, "s_noise": s_noise, "max_stage": max_stage},
+        ),
+    )
+
+
+def _with_default(spec, default):
+    value_type, options = spec
+    return (value_type, {**options, "default": default})
+
+
 class MiniMaxH3RefDeltaSampler:
+    """Compatibility/manual sampler exposing every diagnostic and controller knob."""
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -61,7 +86,10 @@ class MiniMaxH3RefDeltaSampler:
     RETURN_NAMES = ("sampler",)
     FUNCTION = "build"
     CATEGORY = "sampling/custom_sampling/samplers"
-    DESCRIPTION = "ER-SDE-derived sampler with nonuniform raw-anchor risk controls for MiniMax-H3 RefDelta checkpoints."
+    DESCRIPTION = (
+        "Advanced/manual RefDelta ER-SDE sampler. Preserves released defaults and exposes "
+        "diagnostic capture plus every stochastic-controller knob."
+    )
 
     def build(
         self,
@@ -100,8 +128,6 @@ class MiniMaxH3RefDeltaSampler:
         stochastic_gate_slew_limit,
         debug_stability_maps,
     ):
-        import comfy.samplers
-
         config = RefDeltaSamplerConfig(
             adaptive_order=adaptive_order,
             risk_sensitivity=risk_sensitivity,
@@ -119,9 +145,7 @@ class MiniMaxH3RefDeltaSampler:
             stochastic_control_mode=stochastic_control_mode,
             video_stochastic_strength_scale=video_stochastic_strength_scale,
             audio_stochastic_strength_scale=audio_stochastic_strength_scale,
-            static_video_stochastic_adaptation_strength=(
-                static_video_stochastic_adaptation_strength
-            ),
+            static_video_stochastic_adaptation_strength=static_video_stochastic_adaptation_strength,
             video_stability_restore_strength=video_stability_restore_strength,
             video_stability_motion_low=video_stability_motion_low,
             video_stability_motion_high=video_stability_motion_high,
@@ -138,11 +162,125 @@ class MiniMaxH3RefDeltaSampler:
             stochastic_gate_slew_limit=stochastic_gate_slew_limit,
             debug_stability_maps=debug_stability_maps,
         )
-        config.validate()
-        return (comfy.samplers.KSAMPLER(
-            sample_refdelta_er_sde,
-            extra_options={"config": config, "s_noise": s_noise, "max_stage": max_stage},
-        ),)
+        return _ksampler(config, s_noise, max_stage)
+
+
+class MiniMaxH3RefDeltaProductionSampler(MiniMaxH3RefDeltaSampler):
+    """Recommended rank-1024 INT8 ConvRot stability preset with tunable controls."""
+
+    PRESET_ID = PRODUCTION_STABILITY_PRESET_ID
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        inputs = deepcopy(super().INPUT_TYPES())
+        required = inputs["required"]
+        required.pop("calibration_capture")
+        required.pop("calibration_id")
+        required.pop("stochastic_control_mode")
+        widget_defaults = {
+            "adaptive_order": PRODUCTION_STABILITY_DEFAULTS["adaptive_order"],
+            "risk_sensitivity": PRODUCTION_STABILITY_DEFAULTS["risk_sensitivity"],
+            "stochastic_adaptation_strength": PRODUCTION_STABILITY_DEFAULTS["stochastic_adaptation_strength"],
+            "minimum_stochastic_multiplier": PRODUCTION_STABILITY_DEFAULTS["minimum_stochastic_multiplier"],
+            "trajectory_correction": PRODUCTION_STABILITY_DEFAULTS["trajectory_correction"],
+            "video_correction_strength": PRODUCTION_STABILITY_DEFAULTS["video_correction_strength"],
+            "audio_correction_strength": PRODUCTION_STABILITY_DEFAULTS["audio_correction_strength"],
+            "correction_bound": PRODUCTION_STABILITY_DEFAULTS["correction_bound"],
+            "endpoint_fidelity_fraction": PRODUCTION_STABILITY_DEFAULTS["endpoint_fidelity_fraction"],
+            "video_stochastic_strength_scale": PRODUCTION_STABILITY_DEFAULTS["video_stochastic_strength_scale"],
+            "audio_stochastic_strength_scale": PRODUCTION_STABILITY_DEFAULTS["audio_stochastic_strength_scale"],
+            "static_video_stochastic_adaptation_strength": PRODUCTION_STABILITY_DEFAULTS["static_video_stochastic_adaptation_strength"],
+            "video_stability_restore_strength": PRODUCTION_STABILITY_DEFAULTS["video_stability_restore_strength"],
+            "video_stability_motion_low": PRODUCTION_STABILITY_DEFAULTS["video_stability_motion_low"],
+            "video_stability_motion_high": PRODUCTION_STABILITY_DEFAULTS["video_stability_motion_high"],
+            "video_stability_diffusion_low": PRODUCTION_STABILITY_DEFAULTS["video_stability_diffusion_low"],
+            "video_stability_diffusion_high": PRODUCTION_STABILITY_DEFAULTS["video_stability_diffusion_high"],
+            "video_stability_diffusion_weight": PRODUCTION_STABILITY_DEFAULTS["video_stability_diffusion_weight"],
+            "video_stability_normalization_floor": PRODUCTION_STABILITY_DEFAULTS["video_stability_normalization_floor"],
+            "video_stability_gamma": PRODUCTION_STABILITY_DEFAULTS["video_stability_gamma"],
+            "video_stability_spatial_radius": PRODUCTION_STABILITY_DEFAULTS["video_stability_spatial_radius"],
+            "video_stability_temporal_radius": PRODUCTION_STABILITY_DEFAULTS["video_stability_temporal_radius"],
+            "video_stability_ema": PRODUCTION_STABILITY_DEFAULTS["video_stability_ema"],
+            "video_stability_start_fraction": PRODUCTION_STABILITY_DEFAULTS["video_stability_start_fraction"],
+            "video_stability_full_fraction": PRODUCTION_STABILITY_DEFAULTS["video_stability_full_fraction"],
+            "stochastic_gate_slew_limit": PRODUCTION_STABILITY_DEFAULTS["stochastic_gate_slew_limit"],
+            "debug_stability_maps": PRODUCTION_STABILITY_DEFAULTS["debug_stability_maps"],
+        }
+        for name, default in widget_defaults.items():
+            required[name] = _with_default(required[name], default)
+        return inputs
+
+    DESCRIPTION = (
+        "Recommended MiniMax-H3 RefDelta sampler preset for the rank-1024 INT8 ConvRot "
+        "checkpoint. Uses spatiotemporal stability control; all production tuning remains exposed."
+    )
+
+    def build(
+        self,
+        adaptive_order,
+        risk_sensitivity,
+        stochastic_adaptation_strength,
+        minimum_stochastic_multiplier,
+        trajectory_correction,
+        video_correction_strength,
+        audio_correction_strength,
+        correction_bound,
+        endpoint_fidelity_fraction,
+        s_noise,
+        max_stage,
+        debug_telemetry,
+        telemetry_prefix,
+        video_stochastic_strength_scale,
+        audio_stochastic_strength_scale,
+        static_video_stochastic_adaptation_strength,
+        video_stability_restore_strength,
+        video_stability_motion_low,
+        video_stability_motion_high,
+        video_stability_diffusion_low,
+        video_stability_diffusion_high,
+        video_stability_diffusion_weight,
+        video_stability_normalization_floor,
+        video_stability_gamma,
+        video_stability_spatial_radius,
+        video_stability_temporal_radius,
+        video_stability_ema,
+        video_stability_start_fraction,
+        video_stability_full_fraction,
+        stochastic_gate_slew_limit,
+        debug_stability_maps,
+    ):
+        config = production_stability_config(
+            adaptive_order=adaptive_order,
+            risk_sensitivity=risk_sensitivity,
+            stochastic_adaptation_strength=stochastic_adaptation_strength,
+            minimum_stochastic_multiplier=minimum_stochastic_multiplier,
+            trajectory_correction=trajectory_correction,
+            video_correction_strength=video_correction_strength,
+            audio_correction_strength=audio_correction_strength,
+            correction_bound=correction_bound,
+            endpoint_fidelity_fraction=endpoint_fidelity_fraction,
+            telemetry=debug_telemetry,
+            telemetry_prefix=telemetry_prefix,
+            video_stochastic_strength_scale=video_stochastic_strength_scale,
+            audio_stochastic_strength_scale=audio_stochastic_strength_scale,
+            static_video_stochastic_adaptation_strength=static_video_stochastic_adaptation_strength,
+            video_stability_restore_strength=video_stability_restore_strength,
+            video_stability_motion_low=video_stability_motion_low,
+            video_stability_motion_high=video_stability_motion_high,
+            video_stability_diffusion_low=video_stability_diffusion_low,
+            video_stability_diffusion_high=video_stability_diffusion_high,
+            video_stability_diffusion_weight=video_stability_diffusion_weight,
+            video_stability_normalization_floor=video_stability_normalization_floor,
+            video_stability_gamma=video_stability_gamma,
+            video_stability_spatial_radius=video_stability_spatial_radius,
+            video_stability_temporal_radius=video_stability_temporal_radius,
+            video_stability_ema=video_stability_ema,
+            video_stability_start_fraction=video_stability_start_fraction,
+            video_stability_full_fraction=video_stability_full_fraction,
+            stochastic_gate_slew_limit=stochastic_gate_slew_limit,
+            debug_stability_maps=debug_stability_maps,
+        )
+        return _ksampler(config, s_noise, max_stage)
 
 
 class MiniMaxH3RefDeltaComparisonReplaySampler:
@@ -163,21 +301,23 @@ class MiniMaxH3RefDeltaComparisonReplaySampler:
     FUNCTION = "build"
     CATEGORY = "sampling/custom_sampling/samplers"
     DESCRIPTION = (
-        "Disk-backed comparison sampler. Replays exact captured fused states through the currently "
-        "loaded labeled MODEL and returns the captured fused final latent so continuation stays exact."
+        "Disk-backed diagnostic comparison sampler. Replays exact captured fused states through "
+        "the currently loaded labeled MODEL and returns the captured fused final latent."
     )
 
     def build(self, calibration_id, comparison_label, telemetry_prefix):
         import comfy.samplers
 
-        return (comfy.samplers.KSAMPLER(
-            sample_refdelta_comparison_replay,
-            extra_options={
-                "calibration_id": calibration_id,
-                "comparison_label": comparison_label,
-                "telemetry_prefix": telemetry_prefix,
-            },
-        ),)
+        return (
+            comfy.samplers.KSAMPLER(
+                sample_refdelta_comparison_replay,
+                extra_options={
+                    "calibration_id": calibration_id,
+                    "comparison_label": comparison_label,
+                    "telemetry_prefix": telemetry_prefix,
+                },
+            ),
+        )
 
 
 class MiniMaxH3RefDeltaReferenceReplaySampler:
@@ -203,16 +343,21 @@ class MiniMaxH3RefDeltaReferenceReplaySampler:
     def build(self, calibration_id, telemetry_prefix):
         import comfy.samplers
 
-        return (comfy.samplers.KSAMPLER(
-            sample_refdelta_reference_replay,
-            extra_options={
-                "calibration_id": calibration_id,
-                "telemetry_prefix": telemetry_prefix,
-            },
-        ),)
+        return (
+            comfy.samplers.KSAMPLER(
+                sample_refdelta_reference_replay,
+                extra_options={
+                    "calibration_id": calibration_id,
+                    "telemetry_prefix": telemetry_prefix,
+                },
+            ),
+        )
 
 
 class MiniMaxH3RefDeltaScheduler:
+    """Saved-workflow/research scheduler retained after production returned to stock beta."""
+
+    DEPRECATED = True
     PROFILES: ClassVar[list[str]] = ["r1024_provisional"]
 
     @classmethod
@@ -230,7 +375,10 @@ class MiniMaxH3RefDeltaScheduler:
     RETURN_NAMES = ("sigmas",)
     FUNCTION = "get_sigmas"
     CATEGORY = "sampling/custom_sampling/schedulers"
-    DESCRIPTION = "Profile-density scheduler for MiniMax-H3 RefDelta. The bundled rank-1024 profile is provisional until calibrated from matched same-state runs."
+    DESCRIPTION = (
+        "Legacy/research profile-density scheduler retained for saved workflows. Production "
+        "recommendation is ComfyUI BasicScheduler with beta; the bundled profile is neutral."
+    )
 
     def get_sigmas(self, model, steps, denoise, profile):
         model_sampling = model.get_model_object("model_sampling")
@@ -239,7 +387,7 @@ class MiniMaxH3RefDeltaScheduler:
 
 
 class MiniMaxH3RefDeltaReferenceGuider:
-    """Legacy simultaneous dual-model diagnostic retained for saved workflows."""
+    """Deprecated simultaneous dual-model diagnostic retained for saved workflows."""
 
     DEPRECATED = True
 
@@ -261,7 +409,7 @@ class MiniMaxH3RefDeltaReferenceGuider:
     CATEGORY = "sampling/custom_sampling/guiders"
     DESCRIPTION = (
         "Legacy simultaneous dual-model diagnostic. It may require both full H3 models resident; "
-        "prefer Calibration Capture + Comparison Replay."
+        "prefer diagnostic capture + Comparison Replay."
     )
 
     def build(self, model, reference_model, positive, negative, cfg):
@@ -282,6 +430,7 @@ class MiniMaxH3RefDeltaReferenceGuider:
 
 NODE_CLASS_MAPPINGS = {
     "MiniMaxH3RefDeltaSampler": MiniMaxH3RefDeltaSampler,
+    "MiniMaxH3RefDeltaProductionSampler": MiniMaxH3RefDeltaProductionSampler,
     "MiniMaxH3RefDeltaComparisonReplaySampler": MiniMaxH3RefDeltaComparisonReplaySampler,
     "MiniMaxH3RefDeltaReferenceReplaySampler": MiniMaxH3RefDeltaReferenceReplaySampler,
     "MiniMaxH3RefDeltaScheduler": MiniMaxH3RefDeltaScheduler,
@@ -289,9 +438,10 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "MiniMaxH3RefDeltaSampler": "MiniMax H3 RefDelta Sampler",
+    "MiniMaxH3RefDeltaSampler": "[Advanced/Diagnostic] MiniMax H3 RefDelta Sampler",
+    "MiniMaxH3RefDeltaProductionSampler": "MiniMax H3 RefDelta Stability Sampler",
     "MiniMaxH3RefDeltaComparisonReplaySampler": "MiniMax H3 RefDelta Comparison Replay",
     "MiniMaxH3RefDeltaReferenceReplaySampler": "[Legacy] MiniMax H3 RefDelta Reference Replay",
-    "MiniMaxH3RefDeltaScheduler": "MiniMax H3 RefDelta Scheduler",
+    "MiniMaxH3RefDeltaScheduler": "[Legacy/Research] MiniMax H3 RefDelta Scheduler",
     "MiniMaxH3RefDeltaReferenceGuider": "[Legacy] MiniMax H3 RefDelta Reference Guider",
 }
