@@ -90,7 +90,10 @@ def load_flow_profile(name: str, path: str | Path | None = None) -> FlowDensityP
     if path:
         candidate = Path(path).expanduser()
     else:
-        candidate = Path(str(files("comfyui_refdelta_solver").joinpath("profiles", f"{name}.json")))
+        # CompatibilityFiles.SpecPath in some ComfyUI environments accepts only
+        # one child per joinpath() call. Keep this on the Traversable API instead
+        # of coercing the packaged resource through a filesystem-only Path.
+        candidate = files("comfyui_refdelta_solver").joinpath("profiles").joinpath(f"{name}.json")
     if not candidate.is_file():
         raise FileNotFoundError(f"shared-flow profile {candidate} was not found")
     with candidate.open("r", encoding="utf-8") as handle:
