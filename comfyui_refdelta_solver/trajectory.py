@@ -41,6 +41,17 @@ def stochastic_pressure_from_ratio(ratio: torch.Tensor) -> torch.Tensor:
 @dataclass(frozen=True, slots=True)
 class StreamLayout:
     video_elements: int | None
+    video_shape: tuple[int, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.video_elements is not None and self.video_elements <= 0:
+            raise ValueError("video_elements must be positive")
+        if self.video_shape is not None:
+            if len(self.video_shape) != 4 or any(size <= 0 for size in self.video_shape):
+                raise ValueError("video_shape must be a positive (C, T, H, W) tuple")
+            elements = math.prod(self.video_shape)
+            if self.video_elements is None or elements != self.video_elements:
+                raise ValueError("video_shape does not match video_elements")
 
     def split(self, value: torch.Tensor) -> dict[str, torch.Tensor]:
         if self.video_elements is None:
@@ -51,6 +62,53 @@ class StreamLayout:
             "video": value[..., : self.video_elements],
             "audio": value[..., self.video_elements :],
         }
+
+    def video_to_latent(self, value: torch.Tensor) -> torch.Tensor:
+        """View a packed video stream as ``[B, C, T, H, W]`` safely."""
+        if self.video_elements is None or self.video_shape is None:
+            raise ValueError("packed H3 video shape is unavailable")
+        if (
+            value.ndim not in (2, 3)
+            or (value.ndim == 3 and value.shape[-2] != 1)
+            or value.shape[-1] != self.video_elements
+        ):
+            raise ValueError(
+                "packed H3 video stream must have shape [B, video_elements] "
+                "or [B, 1, video_elements]"
+            )
+        return value.reshape(value.shape[0], *self.video_shape)
+
+    def latent_to_video(
+        self,
+        value: torch.Tensor,
+        packed_like: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """View ``[B, C, T, H, W]`` as the corresponding packed video stream."""
+        if self.video_elements is None or self.video_shape is None:
+            raise ValueError("packed H3 video shape is unavailable")
+        if value.ndim != 5 or tuple(value.shape[1:]) != self.video_shape:
+            raise ValueError(
+                f"video latent must have shape [B, {', '.join(map(str, self.video_shape))}]"
+            )
+        if packed_like is None:
+            return value.reshape(value.shape[0], self.video_elements)
+        if (
+            packed_like.shape[0] != value.shape[0]
+            or packed_like.shape[-1] != self.video_elements
+            or packed_like.ndim not in (2, 3)
+            or (packed_like.ndim == 3 and packed_like.shape[-2] != 1)
+        ):
+            raise ValueError("packed_like does not match the declared video layout")
+        return value.reshape(packed_like.shape)
+
+    def combine(self, video: torch.Tensor, audio: torch.Tensor) -> torch.Tensor:
+        if self.video_elements is None:
+            raise ValueError("cannot combine streams without a packed H3 stream layout")
+        if video.ndim != audio.ndim or video.shape[:-1] != audio.shape[:-1]:
+            raise ValueError("video and audio streams have incompatible packed shapes")
+        if video.shape[-1] != self.video_elements:
+            raise ValueError("video stream does not match the declared layout")
+        return torch.cat((video, audio), dim=-1)
 
 
 @dataclass(slots=True)

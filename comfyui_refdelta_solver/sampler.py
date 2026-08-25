@@ -23,6 +23,11 @@ from .spectrum_interop import (
     publish_stochastic_increment,
     spectrum_bridge,
 )
+from .stochastic_control import (
+    StochasticControlResult,
+    StochasticStabilityController,
+    tensor_distribution,
+)
 from .telemetry import TelemetryWriter
 from .trajectory import (
     StreamLayout,
@@ -49,10 +54,14 @@ def _stream_layout(model, x: torch.Tensor) -> StreamLayout:
     latent_shapes = getattr(base_model, "latent_shapes", None)
     if latent_shapes is None or len(latent_shapes) < 2:
         return StreamLayout(None)
-    video_elements = math.prod(latent_shapes[0][1:])
+    video_shape = tuple(int(size) for size in latent_shapes[0][1:])
+    video_elements = math.prod(video_shape)
     if x.shape[-1] <= video_elements:
         raise ValueError("MiniMax H3 RefDelta sampler received an invalid packed AV latent")
-    return StreamLayout(video_elements)
+    return StreamLayout(
+        video_elements,
+        video_shape if len(video_shape) == 4 else None,
+    )
 
 
 def _validate_h3_sampling(model_sampling: Any) -> tuple[float, float]:
@@ -209,6 +218,114 @@ def _write_record(
         capture.write_record(step, record)
 
 
+def _stochastic_control_record(
+    config: RefDeltaSamplerConfig,
+    controller: StochasticStabilityController,
+    result: StochasticControlResult | None,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "stochastic_control_mode": config.stochastic_control_mode,
+        "effective_video_stochastic_strength": controller.effective_video_strength,
+        "effective_audio_stochastic_strength": controller.effective_audio_strength,
+        "static_video_stochastic_adaptation_strength": (
+            config.static_video_stochastic_adaptation_strength
+        ),
+    }
+    if result is None:
+        return record
+    record.update(
+        {
+            "legacy_target_stochastic_multiplier": result.legacy_target_gate,
+            "video_dynamic_target_multiplier": result.video_dynamic_target_gate,
+            "video_static_target_multiplier": result.video_static_target_gate,
+            "audio_target_multiplier": result.audio_target_gate,
+            "audio_applied_gate": result.audio_applied_gate,
+            "video_stability_progress_gate": result.progress_gate,
+            "video_stability_source_actual_step": result.source_actual_step,
+            "video_stability_updated_this_step": result.stability_updated_this_step,
+            "stochastic_gate_slew_applied": result.slew_applied,
+            "stochastic_gate_slew_fraction": result.slew_fraction,
+        }
+    )
+    if result.video_applied_gate is not None:
+        for name, value in tensor_distribution(result.video_applied_gate).items():
+            record[f"video_applied_gate_{name}"] = value
+    if result.restore_mask is not None:
+        for name, value in tensor_distribution(
+            result.restore_mask,
+            active_threshold=0.5,
+        ).items():
+            record[f"video_restore_{name}"] = value
+    if result.temporal_motion_ratio is not None:
+        stats = tensor_distribution(result.temporal_motion_ratio)
+        for name in ("mean", "p50", "p95"):
+            record[f"video_temporal_motion_ratio_{name}"] = stats[name]
+    if result.diffusion_change_ratio is not None:
+        stats = tensor_distribution(result.diffusion_change_ratio)
+        for name in ("mean", "p50", "p95"):
+            record[f"video_diffusion_change_ratio_{name}"] = stats[name]
+    return record
+
+
+def _write_stability_maps(
+    writer: TelemetryWriter | None,
+    config: RefDeltaSamplerConfig,
+    result: StochasticControlResult | None,
+    step: int,
+    sigma: torch.Tensor,
+    seed: int | None,
+) -> None:
+    if (
+        writer is None
+        or not config.debug_stability_maps
+        or result is None
+        or not result.stability_updated_this_step
+        or result.restore_mask is None
+        or result.temporal_motion_ratio is None
+        or result.video_applied_gate is None
+    ):
+        return
+    applied_gate = result.video_applied_gate
+    if applied_gate.ndim == 0:
+        applied_gate = applied_gate.expand_as(result.restore_mask)
+    writer.write_stability_maps(
+        step,
+        sigma,
+        result.temporal_motion_ratio,
+        result.diffusion_change_ratio,
+        result.restore_mask,
+        applied_gate,
+        {
+            "seed": seed,
+            "stochastic_control_mode": config.stochastic_control_mode,
+            "config": {
+                "stochastic_adaptation_strength": config.stochastic_adaptation_strength,
+                "minimum_stochastic_multiplier": config.minimum_stochastic_multiplier,
+                "video_stochastic_strength_scale": config.video_stochastic_strength_scale,
+                "static_video_stochastic_adaptation_strength": (
+                    config.static_video_stochastic_adaptation_strength
+                ),
+                "video_stability_restore_strength": config.video_stability_restore_strength,
+                "video_stability_motion_low": config.video_stability_motion_low,
+                "video_stability_motion_high": config.video_stability_motion_high,
+                "video_stability_diffusion_low": config.video_stability_diffusion_low,
+                "video_stability_diffusion_high": config.video_stability_diffusion_high,
+                "video_stability_diffusion_weight": config.video_stability_diffusion_weight,
+                "video_stability_normalization_floor": (
+                    config.video_stability_normalization_floor
+                ),
+                "video_stability_gamma": config.video_stability_gamma,
+                "video_stability_spatial_radius": config.video_stability_spatial_radius,
+                "video_stability_temporal_radius": config.video_stability_temporal_radius,
+                "video_stability_ema": config.video_stability_ema,
+                "video_stability_start_fraction": config.video_stability_start_fraction,
+                "video_stability_full_fraction": config.video_stability_full_fraction,
+                "stochastic_gate_slew_limit": config.stochastic_gate_slew_limit,
+            },
+        },
+    )
+
+
 @torch.no_grad()
 def sample_refdelta_er_sde(
     model,
@@ -256,6 +373,11 @@ def sample_refdelta_er_sde(
     effective_s_noise = float(s_noise) * float(getattr(model_sampling, "noise_scale", 1.0))
     s_in = x.new_ones([x.shape[0]])
     layout = _stream_layout(model, x)
+    stochastic_controller = StochasticStabilityController(
+        config,
+        layout,
+        multiplier=stochastic_multiplier,
+    )
 
     num_integration_points = 200.0
     point_indices = torch.arange(0, num_integration_points, dtype=torch.float32, device=x.device)
@@ -310,12 +432,21 @@ def sample_refdelta_er_sde(
                 "sigma_min": model_sampling.sigma_min,
                 "sigma_max": model_sampling.sigma_max,
             }
+            record.update(
+                _stochastic_control_record(config, stochastic_controller, None)
+            )
             if recording:
                 _record_stream_norms(record, "latent_rms", x, layout)
                 _record_stream_norms(record, "denoised_rms", raw_denoised, layout)
 
             if sigmas[i + 1] == 0:
                 x = raw_denoised
+                if result_is_actual:
+                    stochastic_controller.update_actual(
+                        raw_denoised,
+                        evidence_history.previous_raw,
+                        i,
+                    )
                 if recording:
                     if result_is_actual:
                         terminal_observation = evidence_history.observe(
@@ -449,6 +580,12 @@ def sample_refdelta_er_sde(
                 )
             else:
                 observation = last_actual_observation
+            if result_is_actual:
+                stochastic_controller.update_actual(
+                    raw_denoised,
+                    evidence_history.previous_raw,
+                    i,
+                )
             # ER order responds only to the model trajectory. Native stochastic
             # pressure is tracked separately and must not suppress deterministic
             # stage-2/3 corrections merely because ER-SDE itself injects noise.
@@ -482,17 +619,9 @@ def sample_refdelta_er_sde(
             if stage3 is not None:
                 x = x + stage3 * stage3_gate
 
-            adapted_stochastic_gate = stochastic_multiplier(
-                observation.risk,
-                config.stochastic_adaptation_strength,
-                config.minimum_stochastic_multiplier,
-            )
-            # Fade only this sampler's adaptation near the endpoint. A value of
-            # one is native ER-SDE stochasticity, so endpoint fidelity must
-            # return to one rather than suppressing the stock noise increment.
-            stochastic_gate = 1.0 + endpoint * (adapted_stochastic_gate - 1.0)
             native_stochastic = None
             stochastic = None
+            stochastic_control = None
             if effective_s_noise > 0.0:
                 stochastic_scale = (er_lambda_t ** 2 - er_lambda_s ** 2 * r ** 2).sqrt().nan_to_num(nan=0.0)
                 native_stochastic = (
@@ -501,7 +630,15 @@ def sample_refdelta_er_sde(
                     * effective_s_noise
                     * stochastic_scale
                 )
-                stochastic = native_stochastic * stochastic_gate
+                stochastic_control = stochastic_controller.apply(
+                    native_stochastic,
+                    observation,
+                    endpoint,
+                    i,
+                    total_steps,
+                    collect_stats=recording,
+                )
+                stochastic = stochastic_control.increment
                 x = x + stochastic
                 # Spectrum owns the exact post-adaptation increment that was
                 # actually applied to x, not the hypothetical native increment.
@@ -552,11 +689,22 @@ def sample_refdelta_er_sde(
                     "stage2_gate": stage2_gate,
                     "stage3_gate": stage3_gate,
                     "effective_order": 1.0 + stage2_gate + stage3_gate,
-                    "stochastic_multiplier": stochastic_gate,
+                    "stochastic_multiplier": (
+                        raw_denoised.new_ones(())
+                        if stochastic_control is None
+                        else stochastic_control.compatibility_gate
+                    ),
                     "correction_norm": correction_norms,
                     "denoised_difference_rms": observation.movement_rms,
                     "first_derivative_direction_cosine": observation.first_direction_cosine,
                 })
+                record.update(
+                    _stochastic_control_record(
+                        config,
+                        stochastic_controller,
+                        stochastic_control,
+                    )
+                )
                 if first is not None:
                     _record_stream_norms(record, "first_derivative_rms", first, layout)
                 if second is not None:
@@ -604,10 +752,19 @@ def sample_refdelta_er_sde(
                 if reference_denoised is not None:
                     record["reference"] = compare_same_state(x_current, sigmas[i], raw_denoised, reference_denoised, layout)
                 _write_record(writer, capture, i, record)
+                _write_stability_maps(
+                    writer,
+                    config,
+                    stochastic_control,
+                    i,
+                    sigmas[i],
+                    seed,
+                )
         completed = True
     finally:
         solver_history.reset()
         evidence_history.reset()
+        stochastic_controller.reset()
         if writer is not None:
             writer.close()
         if capture is not None:

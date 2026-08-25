@@ -36,7 +36,7 @@ class _Model:
         sampling = _Sampling()
         sampling.set_parameters(shift=12.0, audio_shift=3.0)
         patcher = SimpleNamespace(get_model_object=lambda name: sampling if name == "model_sampling" else None)
-        packed_model = SimpleNamespace(latent_shapes=[(1, 2), (1, 2)])
+        packed_model = SimpleNamespace(latent_shapes=[(1, 1, 1, 1, 2), (1, 2)])
         self.inner_model = SimpleNamespace(model_patcher=patcher, inner_model=packed_model)
 
     def __call__(self, state, sigma, **_extra_args):
@@ -285,3 +285,68 @@ def test_spectrum_forecast_applies_correction_from_actual_only_evidence(monkeypa
     forecast_call = correction_calls[2]
     assert forecast_call["previous_raw"] is not None
     assert forecast_call["first"] is not None
+
+
+def test_spatial_controller_updates_only_actuals_and_publishes_exact_applied_increment(monkeypatch):
+    original_controller = sampler_module.StochasticStabilityController
+    controller_updates = []
+    applied_increments = []
+    published = []
+
+    class SpyController(original_controller):
+        def update_actual(self, packed_denoised, previous_actual, step_index):
+            controller_updates.append(step_index)
+            return super().update_actual(packed_denoised, previous_actual, step_index)
+
+        def apply(self, *args, **kwargs):
+            result = super().apply(*args, **kwargs)
+            applied_increments.append(result.increment)
+            return result
+
+    class Bridge:
+        api_version = 1
+        interop_contract = SPECTRUM_INTEROP_CONTRACT
+
+        @staticmethod
+        def model_result_is_actual(step_id):
+            return step_id != 2
+
+        @staticmethod
+        def publish_stochastic_increment(step_id, increment):
+            published.append((step_id, increment))
+
+    monkeypatch.setattr(sampler_module, "StochasticStabilityController", SpyController)
+    initial = torch.tensor([[0.2, -0.1, 0.4, -0.3]], dtype=torch.float32)
+    sigmas = torch.tensor([1.0, 0.82, 0.64, 0.46, 0.28, 0.0], dtype=torch.float32)
+    sample_refdelta_er_sde(
+        _Model(),
+        initial,
+        sigmas,
+        extra_args={
+            "seed": 7,
+            "model_options": {
+                "transformer_options": {SPECTRUM_BRIDGE_KEY: Bridge()}
+            },
+        },
+        disable=True,
+        s_noise=0.8,
+        noise_sampler=_fixed_noise(initial),
+        config=RefDeltaSamplerConfig(
+            adaptive_order=False,
+            stochastic_control_mode="spatiotemporal_stability",
+            stochastic_adaptation_strength=0.75,
+            minimum_stochastic_multiplier=0.1,
+            video_stability_spatial_radius=0,
+            video_stability_temporal_radius=0,
+            video_stability_ema=0.0,
+            video_stability_start_fraction=0.0,
+            video_stability_full_fraction=0.0,
+        ),
+    )
+
+    assert 2 not in controller_updates
+    assert {0, 1, 3, 4} <= set(controller_updates)
+    assert [step for step, _ in published] == [0, 1, 2, 3]
+    assert len(applied_increments) == len(published)
+    for applied, (_, sent) in zip(applied_increments, published, strict=True):
+        assert sent is applied

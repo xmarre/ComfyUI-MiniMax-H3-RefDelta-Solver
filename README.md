@@ -44,6 +44,100 @@ Native stochastic pressure is measured before the stochastic gate is applied, so
 
 The advanced controls are intentionally bounded. Start with the defaults. `trajectory_correction` should remain off until diagnostic runs support it.
 
+#### Stochastic control modes
+
+`stochastic_control_mode` selects one of three compatible controllers:
+
+- `legacy_global` is the default and reproduces the released behavior: the maximum packed AV risk produces one scalar gate for the complete stochastic increment. It exists for saved-workflow compatibility, regression baselines, and clean A/B tests.
+- `streamwise` uses the actual-only `video` and `audio` risks independently. `video_stochastic_strength_scale` and `audio_stochastic_strength_scale` scale the common `stochastic_adaptation_strength`, with the effective strengths clamped to `[0, 1]`.
+- `spatiotemporal_stability` keeps audio streamwise and applies a smooth `[B,1,T,H,W]` gate to the H3 video latent. It requires a valid H3 video shape from `latent_shapes`; it never decodes pixels, evaluates another model, or adds NFE.
+
+| Advanced control | Default | Node range | Meaning |
+| --- | ---: | ---: | --- |
+| `stochastic_control_mode` | `legacy_global` | three modes above | Controller topology |
+| `video_stochastic_strength_scale` | `1.0` | `0..2`, step `0.05` | Video scale on the base adaptation strength |
+| `audio_stochastic_strength_scale` | `1.0` | `0..2`, step `0.05` | Audio scale on the base adaptation strength |
+| `static_video_stochastic_adaptation_strength` | `0.50` | `0..1`, step `0.05` | Static-region target policy |
+| `video_stability_restore_strength` | `1.0` | `0..1`, step `0.05` | Maximum spatial interpolation confidence |
+| `video_stability_motion_low/high` | `0.02 / 0.10` | `0..2`, step `0.005` | Normalized temporal-motion classification band; high must exceed low |
+| `video_stability_diffusion_low/high` | `0.02 / 0.15` | `0..2`, step `0.005` | Normalized actual-to-actual change band; high must exceed low |
+| `video_stability_diffusion_weight` | `0.50` | `0..1`, step `0.05` | Weight requiring diffusion-step stability |
+| `video_stability_normalization_floor` | `0.10` | `0.001..1`, step `0.01` | Global-signal denominator contribution |
+| `video_stability_gamma` | `1.0` | `0.25..4`, step `0.05` | Below one broadens restoration; above one selects it more tightly |
+| `video_stability_spatial_radius` | `2` | `0..8` latent cells | H/W smoothing radius |
+| `video_stability_temporal_radius` | `2` | `0..8` latent cells | T smoothing radius |
+| `video_stability_ema` | `0.70` | `0..0.99`, step `0.05` | Actual-to-actual mask persistence |
+| `video_stability_start_fraction` | `0.10` | `0..1`, step `0.01` | Progress where restoration can begin |
+| `video_stability_full_fraction` | `0.30` | `0..1`, step `0.01` | Progress where restoration reaches full weight; must be at least start |
+| `stochastic_gate_slew_limit` | `0.0` | `0..1`, step `0.01` | Maximum adapted-gate change per solver step; zero disables |
+| `debug_stability_maps` | `false` | boolean | Writes actual-only maps when debug telemetry is also enabled |
+
+The spatial controller derives two dimensionless latent-space signals from genuine model outputs. Temporal motion is channel-RMS change between neighboring latent time slices. Diffusion change is channel-RMS change at each cell from the preceding actual x0. Both are normalized by local signal plus `video_stability_normalization_floor` times the batch-global signal. The motion low/high thresholds classify temporal staticness; the diffusion low/high thresholds classify whether the detail has settled across actual denoising evaluations. These values describe normalized latent motion, not pixel differences.
+
+The resulting restoration confidence is:
+
+```text
+temporal_staticness
+* lerp(1, diffusion_stability, video_stability_diffusion_weight)
+```
+
+It is shaped by `video_stability_gamma`, scaled by `video_stability_restore_strength`, smoothed with replicate-safe temporal/spatial mean filters, and stabilized across actual evaluations by `video_stability_ema`. `video_stability_start_fraction` and `video_stability_full_fraction` form a separate smooth diffusion-progress ramp so early uncertain predictions do not immediately claim static detail. A missing previous actual anchor produces zero restoration confidence.
+
+Static restoration interpolates between two policies calculated from **video risk**:
+
+- the dynamic policy uses `stochastic_adaptation_strength * video_stochastic_strength_scale`;
+- the static policy uses `static_video_stochastic_adaptation_strength`.
+
+It does not force multiplier 1. The usual goal is a static strength at or below the dynamic strength, such as `0.50` versus `0.75`; larger static strengths remain legal for experiments. `minimum_stochastic_multiplier` still bounds both policies globally and is not a spatial classifier. `endpoint_fidelity_fraction` remains independent and fades every adapted gate, including a local map, back toward native multiplier 1 at the endpoint.
+
+`stochastic_gate_slew_limit` optionally limits the per-step change of the adapted scalar or each local gate cell. `0` disables it. Slew is control state: forecasts may advance it, while forecasts never update motion, diffusion, or EMA evidence. Endpoint restoration is applied after slew limiting, so the limiter cannot block the return to native stochasticity.
+
+Spectrum forecasts consume the most recent actual-only stream risks and cached stability mask. They never update the previous-actual anchor, temporal/diffusion evidence, or EMA. Spectrum receives the exact increment after stream splitting, local video gating, scalar audio gating, optional slew, endpoint restoration, and repacking. Native pre-gate stochasticity remains the source of future stochastic-pressure evidence.
+
+#### Initial experimental spatiotemporal profile
+
+This is a starting point for the observed static-background shimmer tradeoff, not a proven universal default:
+
+```text
+stochastic_control_mode = spatiotemporal_stability
+adaptive_order = true
+risk_sensitivity = 1.0
+stochastic_adaptation_strength = 0.75
+minimum_stochastic_multiplier = 0.65
+video_stochastic_strength_scale = 1.0
+audio_stochastic_strength_scale = 1.0
+static_video_stochastic_adaptation_strength = 0.50
+video_stability_restore_strength = 1.0
+video_stability_motion_low = 0.02
+video_stability_motion_high = 0.10
+video_stability_diffusion_low = 0.02
+video_stability_diffusion_high = 0.15
+video_stability_diffusion_weight = 0.50
+video_stability_normalization_floor = 0.10
+video_stability_gamma = 1.0
+video_stability_spatial_radius = 2
+video_stability_temporal_radius = 2
+video_stability_ema = 0.70
+video_stability_start_fraction = 0.10
+video_stability_full_fraction = 0.30
+stochastic_gate_slew_limit = 0.0
+trajectory_correction = true
+video_correction_strength = 0.15
+audio_correction_strength = 0.05
+correction_bound = 0.50
+endpoint_fidelity_fraction = 0.15
+```
+
+#### Spatiotemporal tuning guide
+
+- Static fine-detail shimmer remains: inspect debug maps first; raise restore strength if below `1`, increase `motion_high` (and optionally `motion_low`) to broaden static classification, lower gamma below `1`, or relax diffusion thresholds if diffusion stability rejects settled detail. Lower the static policy toward `0.50` or below only when needed.
+- Moving subjects lose dynamics: lower `motion_high`, raise gamma, reduce restore strength, or move the static strength toward the dynamic strength.
+- The stability mask is noisy or flickers: raise the spatial radius, temporal radius, or EMA. The optional slew limit can further bound applied-gate changes.
+- Restoration starts too late: lower the start/full fractions. If it starts too early and affects composition, raise them or increase diffusion weight.
+- Audio changes undesirably: tune `audio_stochastic_strength_scale`. Video stability settings do not affect audio.
+
+Raising `minimum_stochastic_multiplier` to `0.80` is not the primary fix for static shimmer; empirical tests found that this globally clamps too much of the trajectory.
+
 For a strict stock baseline, set:
 
 ```text
@@ -171,6 +265,10 @@ Risk/stochastic telemetry distinguishes:
 - `risk` / `stream_risk`: the combined evidence used by stochastic adaptation;
 - `native_stochastic_*`: what stock ER-SDE would have injected before RefDelta's stochastic gate;
 - `stochastic_*`: what was actually injected after the gate and published to Spectrum.
+
+Stochastic-controller telemetry also records the selected mode, effective stream strengths, dynamic/static/audio targets, applied video-gate distribution, audio gate, restore-mask distribution and active fraction (`mask > 0.5`), temporal/diffusion ratio summaries, progress gate, source actual step, actual-update flag, and slew activity. The compatibility `stochastic_multiplier` field remains the final packed scalar in `legacy_global`; in streamwise/spatial modes it is the mean final video gate.
+
+When both `debug_telemetry` and `debug_stability_maps` are enabled, each nonterminal actual model step writes a compressed NPZ under the telemetry run's `*-stability-maps/` directory. It contains channel-reduced temporal motion, optional diffusion change, final restore mask, final applied video gate, seed/step/sigma/video shape, and the relevant controller configuration. Forecasts do not emit map files. CPU copies and percentile reductions are limited to explicit telemetry/debug operation.
 
 A stochastic/movement ratio is `null` when no meaningful prior denoised movement exists, including the first step and exactly frozen/protected streams. This prevents epsilon-division artifacts from being mistaken for calibration evidence without discarding small legitimate BF16 movement.
 

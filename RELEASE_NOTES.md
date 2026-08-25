@@ -1,5 +1,16 @@
 # Unreleased
 
+## Spatiotemporal stochastic stability
+
+- Added `legacy_global`, `streamwise`, and `spatiotemporal_stability` stochastic-control modes. `legacy_global` remains the default and preserves released packed-scalar behavior.
+- Added independent actual-only video/audio stochastic targets and strength scales. Audio never consumes the video stability map.
+- Added a channel-reduced H3 latent controller combining normalized neighbor-frame motion with change from the preceding actual x0. It applies a configurable dynamic-policy-to-static-policy interpolation without pixel decode, extra model calls, optical flow, or additional NFE.
+- Added replicate-safe separable temporal/spatial smoothing, actual-only EMA, diffusion-progress ramp, normalization floor, gamma response, and an optional per-cell/scalar gate slew limit. Endpoint fidelity is applied after slew limiting.
+- Extended packed `StreamLayout` with validated `(C,T,H,W)` reconstruction and repacking helpers. Incompatible latent shapes reset cached stability and gate state instead of reusing stale maps.
+- Preserved Spectrum's actual-only evidence invariant: forecasts reuse cached stability/risk, never update motion/diffusion/EMA anchors, and receive the exact final gated increment added to the sampler state. Native pre-gate stochasticity remains the pressure-evidence source.
+- Added scalar telemetry for targets, applied-gate and restore distributions, motion/diffusion summaries, progress/source state, and slew activity. Optional actual-only compressed NPZ map export provides the channel-reduced motion, diffusion, restore, and final gate maps with seed/step/sigma/config metadata.
+- Added regression coverage for legacy equivalence, stream independence, static/moving separation, diffusion suppression, collapsed policies, finite bounds, smoothing edges, actual-only EMA, forecast contamination, shape resets, endpoint ordering, slew behavior, exact Spectrum publication, telemetry, debug-map export, invalid layouts, and native delegation with inactive adaptation.
+
 ## Labeled comparison calibration
 
 - Generalized the disk-backed replay system into labeled comparison passes. One fused INT8 ConvRot capture can now be replayed separately through FL2VA and genuine Ref2VA while loading one full H3 model per execution.

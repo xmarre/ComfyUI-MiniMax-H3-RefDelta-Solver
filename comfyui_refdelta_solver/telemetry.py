@@ -49,10 +49,50 @@ class TelemetryWriter:
             suffix += 1
         self.jsonl_path = base.with_suffix(".jsonl")
         self.csv_path = base.with_suffix(".csv")
+        self.stability_map_directory = base.parent / f"{base.name}-stability-maps"
         self._records: list[dict[str, Any]] = []
 
     def write(self, record: dict[str, Any]) -> None:
         self._records.append(flatten_record(record))
+
+    def write_stability_maps(
+        self,
+        step: int,
+        sigma: torch.Tensor,
+        temporal_motion_ratio: torch.Tensor,
+        diffusion_change_ratio: torch.Tensor | None,
+        restore_mask: torch.Tensor,
+        applied_video_gate: torch.Tensor,
+        metadata: dict[str, Any],
+    ) -> Path:
+        """Persist compact channel-reduced actual-step maps only on explicit request."""
+        import numpy as np
+
+        self.stability_map_directory.mkdir(parents=True, exist_ok=True)
+        path = self.stability_map_directory / f"step-{step:04d}.npz"
+
+        def compact(value: torch.Tensor) -> Any:
+            return value.detach().to(device="cpu", dtype=torch.float16).numpy()
+
+        payload = {
+            "temporal_motion_ratio": compact(temporal_motion_ratio),
+            "restore_mask": compact(restore_mask),
+            "applied_video_gate": compact(applied_video_gate),
+            "metadata_json": json.dumps(
+                {
+                    **metadata,
+                    "step": step,
+                    "sigma": float(sigma.detach().cpu()),
+                    "video_shape": list(restore_mask.shape),
+                },
+                sort_keys=True,
+                allow_nan=False,
+            ),
+        }
+        if diffusion_change_ratio is not None:
+            payload["diffusion_change_ratio"] = compact(diffusion_change_ratio)
+        np.savez_compressed(path, **payload)
+        return path
 
     def close(self) -> None:
         if not self._records:
@@ -65,4 +105,3 @@ class TelemetryWriter:
             writer = csv.DictWriter(handle, fieldnames=fields)
             writer.writeheader()
             writer.writerows(self._records)
-

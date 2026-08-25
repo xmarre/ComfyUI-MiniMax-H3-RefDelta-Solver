@@ -45,6 +45,9 @@ def test_native_equivalence_mode_delegates_without_reimplementation(monkeypatch)
         stochastic_adaptation_strength=0.0,
         trajectory_correction=False,
         telemetry=False,
+        stochastic_control_mode="spatiotemporal_stability",
+        static_video_stochastic_adaptation_strength=0.5,
+        video_stability_restore_strength=1.0,
     )
     result = sample_refdelta_er_sde(
         model,
