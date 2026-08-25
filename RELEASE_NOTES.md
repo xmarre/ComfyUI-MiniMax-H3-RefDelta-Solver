@@ -1,11 +1,12 @@
 # Unreleased
 
-## Production sampler and preset
+## Production sampler defaults
 
 - Added `MiniMax H3 RefDelta Stability Sampler` as the recommended production node for the rank-1024 INT8 ConvRot fused checkpoint.
-- Added the named `r1024_int8_convrot_stability_v1` production preset while keeping every production-relevant control editable in the node.
-- The preset uses the current real-generation candidate: spatiotemporal stability control, dynamic stochastic strength `0.60`, minimum multiplier `0.50`, static-video strength `0.25`, motion band `0.15..0.60`, diffusion band `0.05..0.50`, diffusion weight `0.25`, gamma `0.75`, spatial/temporal radii `2`, EMA `0.70`, and the existing bounded trajectory-correction settings.
-- Preserved the original `MiniMaxH3RefDeltaSampler` node ID and dataclass defaults for saved-workflow compatibility. It is now labeled `[Advanced/Diagnostic]` instead of silently adopting the new production preset.
+- Added a dedicated built-in production default set while keeping every production-relevant control editable directly in the node; there is no production profile/calibration file to select for the sampler.
+- The validated current candidate uses spatiotemporal stability control, dynamic stochastic strength `0.50`, minimum multiplier `0.50`, static-video strength `0.25`, motion band `0.15..0.60`, diffusion band `0.05..0.50`, diffusion weight `0.20`, gamma `1.00`, spatial/temporal radii `2`, EMA `0.70`, and the existing bounded trajectory-correction settings.
+- Same-seed validation against the advanced node produced cell-for-cell identical CSV telemetry and byte-for-byte identical JSONL telemetry when configured with the same production values, confirming that the streamlined node does not alter sampler/controller behavior.
+- Preserved the original `MiniMaxH3RefDeltaSampler` node ID and dataclass defaults for saved-workflow compatibility. It is now labeled `[Advanced/Diagnostic]` instead of silently adopting the new production defaults.
 - Kept diagnostic capture controls out of the recommended production node so normal generation settings are not mixed with replay/capture state.
 
 ## Spatiotemporal stochastic stability
