@@ -1,4 +1,4 @@
-# Unreleased
+# MiniMax H3 RefDelta Solver v0.3.0
 
 ## Production sampler defaults
 
