@@ -42,7 +42,7 @@ def read_records(paths: list[Path]) -> list[dict[str, float | str | bool | None]
 def deduplicate_production_records(
     records: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Remove replay copies of the same captured production telemetry row."""
+    """Strip diagnostic fields and deduplicate replay copies of production rows."""
     unique: list[dict[str, Any]] = []
     seen: set[tuple[tuple[str, str, str], ...]] = set()
     for record in records:
@@ -125,27 +125,6 @@ def bin_stability_records(records: list[dict[str, Any]], bins: int) -> list[dict
     return points
 
 
-def aggregate_comparison_diagnostics(records: list[dict[str, Any]]) -> dict[str, float]:
-    fields = sorted(
-        {
-            key
-            for record in records
-            for key, value in record.items()
-            if key.startswith(("comparison_", "ref_delta_"))
-            and isinstance(value, float)
-            and math.isfinite(value)
-        }
-    )
-    return {
-        key: median(
-            float(record[key])
-            for record in records
-            if isinstance(record.get(key), float) and math.isfinite(float(record[key]))
-        )
-        for key in fields
-    }
-
-
 def build_stability_density(
     points: list[dict[str, float]],
     *,
@@ -207,6 +186,12 @@ def build_profile(
     weights: dict[str, float],
     input_files: list[str] | None = None,
 ) -> dict[str, Any]:
+    """Build a research scheduler profile from production telemetry only.
+
+    Same-state FL2VA/Ref2VA comparison fields are deliberately stripped before
+    binning. They remain diagnostic data and are not embedded in scheduler
+    profiles or treated as a scheduler oracle.
+    """
     production_records = deduplicate_production_records(records)
     points = bin_stability_records(production_records, bins)
     if not points:
@@ -226,7 +211,7 @@ def build_profile(
             {"progress": 0.0, "difficulty": 1.0},
             {"progress": 1.0, "difficulty": 1.0},
         ]
-        status = "provisional-neutral"
+        status = "neutral-compatibility"
     return {
         "version": 1,
         "id": profile_id,
@@ -239,18 +224,19 @@ def build_profile(
             "input_files": input_files or [],
             "input_records": len(records),
             "unique_production_records": len(production_records),
-            "replayed_production_duplicates_removed": len(records)
-            - len(production_records),
+            "replayed_production_duplicates_removed": len(records) - len(production_records),
             "populated_bins": len(points),
             "density_source": (
-                "production_trajectory_stability"
+                "production_trajectory_stability_research"
                 if experimental_stability_density
-                else "neutral_pending_held_out_validation"
+                else "neutral_compatibility"
             ),
             "weights": weights if experimental_stability_density else {},
             "binned_production_stability": points,
-            "comparison_diagnostics": aggregate_comparison_diagnostics(records),
             "comparison_metrics_used_for_density": False,
+            "comparison_fields_embedded": False,
+            "production_scheduler": "comfyui_basic_scheduler_beta",
+            "production_use": False,
             "base_scheduler": {"name": "beta", "alpha": 0.6, "beta": 0.6},
         },
     }
@@ -259,13 +245,14 @@ def build_profile(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Aggregate RefDelta production-stability and comparison telemetry. "
-            "The emitted scheduler remains neutral unless the explicit experimental flag is set."
+            "Research-only RefDelta scheduler-profile builder. Production uses ComfyUI "
+            "BasicScheduler beta; FL2VA/Ref2VA comparison fields are stripped and never "
+            "used as scheduler evidence."
         )
     )
     parser.add_argument("inputs", nargs="+", type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--id", default="r1024_provisional_from_telemetry")
+    parser.add_argument("--id", default="r1024_scheduler_research")
     parser.add_argument("--bins", type=int, default=32)
     parser.add_argument("--experimental-stability-density", action="store_true")
     parser.add_argument("--trajectory-weight", type=float, default=1.0)
