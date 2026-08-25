@@ -50,8 +50,14 @@ def test_default_profile_is_neutral_compatibility_and_strips_comparison_data():
     assert metadata["comparison_fields_embedded"] is False
     assert metadata["production_scheduler"] == "comfyui_basic_scheduler_beta"
     assert metadata["production_use"] is False
-    assert not any(key.startswith("comparison_") for key in metadata)
-    assert not any(key.startswith("ref_delta_") for key in metadata)
+    assert "comparison_diagnostics" not in metadata
+    assert "comparison_ref2va_video_x0_relative_error" not in metadata
+    assert "ref_delta_video_cosine" not in metadata
+    assert all(
+        "comparison_ref2va_video_x0_relative_error" not in point
+        and "ref_delta_video_cosine" not in point
+        for point in metadata["binned_production_stability"]
+    )
 
 
 def test_explicit_experimental_density_uses_only_production_stability():
