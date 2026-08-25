@@ -77,7 +77,12 @@ def _row_max(record: dict[str, Any], predicate) -> float:
     return max(values) if values else 0.0
 
 
-def bin_stability_records(records: list[dict[str, Any]], bins: int) -> list[dict[str, float]]:
+def bin_stability_records(
+    records: list[dict[str, Any]],
+    bins: int,
+    *,
+    video_shift: float | None = None,
+) -> list[dict[str, float]]:
     if bins < 1:
         raise ValueError("bins must be positive")
     grouped: list[list[dict[str, Any]]] = [[] for _ in range(bins)]
@@ -85,10 +90,16 @@ def bin_stability_records(records: list[dict[str, Any]], bins: int) -> list[dict
         sigma = record.get("sigma")
         if not isinstance(sigma, float) or not math.isfinite(sigma):
             continue
-        sigma_min = float(record.get("sigma_min", 0.0))
-        sigma_max = float(record.get("sigma_max", 1.0))
-        span = sigma_max - sigma_min
-        progress = 1.0 - sigma if span <= 0.0 else (sigma_max - sigma) / span
+        if video_shift is not None:
+            denominator = video_shift + sigma * (1.0 - video_shift)
+            if denominator <= 0.0:
+                continue
+            progress = 1.0 - sigma / denominator
+        else:
+            sigma_min = float(record.get("sigma_min", 0.0))
+            sigma_max = float(record.get("sigma_max", 1.0))
+            span = sigma_max - sigma_min
+            progress = 1.0 - sigma if span <= 0.0 else (sigma_max - sigma) / span
         progress = min(1.0, max(0.0, progress))
         grouped[min(bins - 1, int(progress * bins))].append(record)
 
@@ -185,6 +196,8 @@ def build_profile(
     experimental_stability_density: bool,
     weights: dict[str, float],
     input_files: list[str] | None = None,
+    shared_flow_density: bool = False,
+    shared_flow_video_shift: float | None = None,
 ) -> dict[str, Any]:
     """Build a research scheduler profile from production telemetry only.
 
@@ -192,8 +205,18 @@ def build_profile(
     binning. They remain diagnostic data and are not embedded in scheduler
     profiles or treated as a scheduler oracle.
     """
+    if shared_flow_density and (
+        shared_flow_video_shift is None
+        or not math.isfinite(shared_flow_video_shift)
+        or shared_flow_video_shift <= 0.0
+    ):
+        raise ValueError("shared-flow density requires a positive finite source video shift")
     production_records = deduplicate_production_records(records)
-    points = bin_stability_records(production_records, bins)
+    points = bin_stability_records(
+        production_records,
+        bins,
+        video_shift=shared_flow_video_shift if shared_flow_density else None,
+    )
     if not points:
         raise ValueError("no finite sigma-bearing telemetry records were found")
     if experimental_stability_density:
@@ -212,14 +235,24 @@ def build_profile(
             {"progress": 1.0, "difficulty": 1.0},
         ]
         status = "neutral-compatibility"
+    output_points = density
+    if shared_flow_density:
+        output_points = [
+            {"progress": point["progress"], "density": point["difficulty"]}
+            for point in density
+        ]
     return {
-        "version": 1,
+        "version": 2 if shared_flow_density else 1,
         "id": profile_id,
         "model_family": "MiniMax-H3 Pruned Ref-Delta Fused",
         "rank": 1024,
         "status": status,
-        "domain": "video-sigma-progress-over-beta-prior",
-        "points": density,
+        "domain": (
+            "shared-base-time-progress-density"
+            if shared_flow_density
+            else "video-sigma-progress-over-beta-prior"
+        ),
+        "points": output_points,
         "metadata": {
             "input_files": input_files or [],
             "input_records": len(records),
@@ -231,13 +264,28 @@ def build_profile(
                 if experimental_stability_density
                 else "neutral_compatibility"
             ),
+            "evidence_source": (
+                "production_actual_trajectory"
+                if experimental_stability_density
+                else "neutral_control"
+            ) if shared_flow_density else None,
             "weights": weights if experimental_stability_density else {},
             "binned_production_stability": points,
             "comparison_metrics_used_for_density": False,
             "comparison_fields_embedded": False,
             "production_scheduler": "comfyui_basic_scheduler_beta",
             "production_use": False,
-            "base_scheduler": {"name": "beta", "alpha": 0.6, "beta": 0.6},
+            "base_scheduler": (
+                "uniform_linspace"
+                if shared_flow_density
+                else {"name": "beta", "alpha": 0.6, "beta": 0.6}
+            ),
+            "profile_semantics": (
+                "immutable_offline_shared_base_time_density"
+                if shared_flow_density
+                else "legacy_beta_prior_density"
+            ),
+            "source_video_shift": shared_flow_video_shift if shared_flow_density else None,
         },
     }
 
@@ -255,6 +303,16 @@ def main() -> None:
     parser.add_argument("--id", default="r1024_scheduler_research")
     parser.add_argument("--bins", type=int, default=32)
     parser.add_argument("--experimental-stability-density", action="store_true")
+    parser.add_argument(
+        "--shared-flow-density",
+        action="store_true",
+        help="Emit version-2 density for MiniMaxH3UniformFlowScheduler curvature_profile mode.",
+    )
+    parser.add_argument(
+        "--video-shift",
+        type=float,
+        help="Source run's video shift; required with --shared-flow-density.",
+    )
     parser.add_argument("--trajectory-weight", type=float, default=1.0)
     parser.add_argument("--curvature-weight", type=float, default=0.25)
     parser.add_argument("--extrapolation-weight", type=float, default=0.25)
@@ -277,6 +335,8 @@ def main() -> None:
         experimental_stability_density=args.experimental_stability_density,
         weights=weights,
         input_files=[str(path) for path in args.inputs],
+        shared_flow_density=args.shared_flow_density,
+        shared_flow_video_shift=args.video_shift,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n", encoding="utf-8")

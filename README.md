@@ -234,6 +234,90 @@ original Continuum trajectory across diagnostic passes. Spectrum is rejected on 
 passes. FL2VA/Ref2VA metrics are explanatory and never enter production stochastic control
 or scheduler density automatically.
 
+### MiniMax H3 Uniform Flow Scheduler [Experimental]
+
+This separate scheduler node is a controlled laboratory for the strongest scheduler lead
+seen in real MiniMax-H3 testing so far: ComfyUI `ddim_uniform` produced many quick cuts,
+coherent action, and unusually high scene/action variety. `linear_quadratic` was also tested
+and did not show special behavior. The quick-cut/high-variety character is intentionally
+preserved as an experimental target.
+
+Connect the node's `SIGMAS` output to the same custom sampling path and continue using
+**ER-SDE**. “DDIM” here describes time-point spacing; this node does not use a DDIM sampler
+or replace ER-SDE. The production recommendation remains `BasicScheduler` + `beta` until
+held-out generated media supports a change.
+
+The default `legacy_ddim_uniform` mode delegates to ComfyUI's own scheduler and reproduces
+the full `BasicScheduler` behavior, including table index 1, integer floor stride, reversal,
+occasional extra point, and final tail slice. This unusual placement is the known-good
+experimental control. Exact parity is tested against the pinned ComfyUI revisions in CI.
+
+All other modes choose one descending trajectory on H3's shared base flow coordinate `u`
+and map it through the loaded model's video shift. H3's `ModelSamplingAV` and model code
+remain authoritative for the corresponding audio time. The node reads `shift` and
+`audio_shift` from the loaded model; it never constructs independent audio/video clocks.
+
+Available modes:
+
+| Mode | Definition / experiment |
+| --- | --- |
+| `legacy_ddim_uniform` | Exact current ComfyUI control, including integer table-stride aliasing |
+| `uniform_linspace` | Inclusive `u=1..0` linspace with `steps+1` points |
+| `phase_offset_uniform` | Nonterminal `u_i = 1 - (i + phase) / steps`, then exact zero |
+| `power_uniform` | `u(x)=(1-x)^power`; `power=1` is exactly `uniform_linspace` |
+| `uniform_refinement_tail` | Uniform body from `u=1` to explicit `tail_start`, then a power-refined tail using `tail_steps` |
+| `trailing_refined` | Starts at the model table's last discrete base-time index, joins at `tail_start`, and explicitly refines to zero |
+| `asymmetric_beta` | Continuous beta quantiles in shared base time; this is deliberately distinct from stock rounded-table `beta` |
+| `av_arc_length` | Blends uniform placement with equal joint video/audio shifted-flow arc length |
+| `piecewise_structure_refinement` | Continuous two-segment progress warp with independent structure/detail powers |
+| `curvature_profile` | Immutable offline production-telemetry density; bundled `h3_uniform_neutral` is neutral |
+
+Controls are marked advanced where appropriate and affect only their named modes. In
+particular, `phase`, `power`, tail controls, beta parameters, arc controls, piecewise
+controls, `profile`, and `profile_path` are inert outside their respective mode.
+
+For all continuous modes the raw schedule deliberately includes `u=1`. Current ER-SDE
+applies ComfyUI's `offset_first_sigma_for_snr` safety adjustment to that first point for a
+`CONST` flow model; subsequent points are unchanged. `legacy_ddim_uniform` starts below
+one and retains its upstream behavior.
+
+`denoise < 1` follows `BasicScheduler` semantics: the node constructs the corresponding
+longer schedule and returns its exact tail. Outputs are deterministic CPU float32 tensors,
+strictly decreasing, finite, and terminated by exact zero. Invalid H3 metadata, duplicate
+points, impossible tails, and legacy step counts beyond the table's unique capacity fail
+explicitly.
+
+Schedule curves and implied audio times can be exported without running the model:
+
+```bash
+python tools/inspect_h3_schedule.py --mode uniform_refinement_tail --steps 20 --format csv
+```
+
+The curvature mode uses a version-2 `shared-base-time-progress-density` schema so legacy
+version-1 beta-prior profiles cannot be silently reinterpreted. Build a profile from
+production trajectory telemetry and pass its path through the advanced `profile_path`
+control:
+
+```bash
+python tools/build_profile.py \
+  ComfyUI/output/refdelta_telemetry/*.csv \
+  --output /tmp/h3_shared_flow_research.json \
+  --id h3_shared_flow_research \
+  --experimental-stability-density \
+  --shared-flow-density \
+  --video-shift 12.0
+```
+
+The builder removes `comparison_*` and `ref_delta_*` fields before binning and marks the
+result as non-production. `--video-shift` must match the source telemetry run; it is stored
+in the profile and used to invert video sigma back to shared base time. Existing version-1
+beta-prior profiles and the legacy scheduler retain their original semantics.
+
+Curve shape, intermediate sharpness, theoretical elegance, and FL2VA/Ref2VA similarity do
+not establish media quality. A/B evaluation should compare coherent action, scene/action
+variety, quick-cut behavior, reference adherence, temporal stability, fine detail, audio,
+and endpoint quality on final generated media.
+
 ### [Legacy/Research] MiniMax H3 RefDelta Scheduler
 
 The custom profile-density scheduler is deprecated for ordinary production workflows.
@@ -257,6 +341,8 @@ There is no production calibration file to select from the FL2VA/Ref2VA replay w
 - emits neutral difficulty by default;
 - requires `--experimental-stability-density` for any non-neutral density;
 - marks generated profiles as non-production research output.
+- preserves version-1 beta-prior output by default and emits version-2 shared-base-time
+  density only with `--shared-flow-density`.
 
 Example research use:
 

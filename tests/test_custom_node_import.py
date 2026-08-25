@@ -37,6 +37,12 @@ assert module.NODE_CLASS_MAPPINGS
 assert module.NODE_DISPLAY_NAME_MAPPINGS
 assert "MiniMaxH3RefDeltaProductionSampler" in module.NODE_CLASS_MAPPINGS
 assert module.NODE_DISPLAY_NAME_MAPPINGS["MiniMaxH3RefDeltaProductionSampler"] == "MiniMax H3 RefDelta Stability Sampler"
+assert "MiniMaxH3UniformFlowScheduler" in module.NODE_CLASS_MAPPINGS
+assert module.NODE_DISPLAY_NAME_MAPPINGS["MiniMaxH3UniformFlowScheduler"] == "MiniMax H3 Uniform Flow Scheduler [Experimental]"
+legacy_scheduler = module.NODE_CLASS_MAPPINGS["MiniMaxH3RefDeltaScheduler"]
+uniform_scheduler = module.NODE_CLASS_MAPPINGS["MiniMaxH3UniformFlowScheduler"]
+assert legacy_scheduler.INPUT_TYPES()["required"]["profile"][0] == ["r1024_provisional"]
+assert uniform_scheduler.INPUT_TYPES()["required"]["profile"][0] == ["h3_uniform_neutral"]
 '''
 
     result = subprocess.run(

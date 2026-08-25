@@ -1,3 +1,15 @@
+# Unreleased
+
+## Experimental H3 uniform-flow scheduler laboratory
+
+- Added the separate stable node ID `MiniMaxH3UniformFlowScheduler`, displayed as `MiniMax H3 Uniform Flow Scheduler [Experimental]`; all existing node IDs and v0.3.0 behavior remain unchanged.
+- Added exact ComfyUI `ddim_uniform` / `BasicScheduler` parity as the default experimental control, preserving integer table stride, phase placement, extra-point behavior, and denoise tail slicing.
+- Added shared-base-time linspace, phase-offset, power, uniform refinement-tail, H3-aware trailing-refined, asymmetric beta, audiovisual arc-length, continuous piecewise structure/refinement, and safe offline curvature-profile modes.
+- Added an explicit version-2 shared-base-time density schema and neutral control profile. The telemetry builder emits it only with `--shared-flow-density`; version-1 beta-prior profile semantics remain unchanged.
+- Preserved one H3 audiovisual clock by mapping shared base time through the loaded model's video sampling API and leaving audio mapping to `ModelSamplingAV`/MiniMax-H3. Runtime video/audio shifts are validated and used by H3-specific modes.
+- Added deterministic schedule inspection/export tooling plus regression coverage for exact pinned-ComfyUI parity, identities, denoise tails, non-default shifts, continuity, numerical boundaries, immutability, packaging, and node registration.
+- Production guidance remains **MiniMax H3 RefDelta Stability Sampler + ComfyUI BasicScheduler beta**. Scheduler-curve behavior is experimental pending held-out final-media validation.
+
 # MiniMax H3 RefDelta Solver v0.3.0
 
 ## Production sampler defaults

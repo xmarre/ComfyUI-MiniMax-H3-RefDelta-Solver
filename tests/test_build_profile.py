@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from comfyui_refdelta_solver.h3_scheduler import flow_profile_from_dict
 from tools.build_profile import build_profile, read_records
 
 
@@ -83,6 +84,43 @@ def test_explicit_experimental_density_uses_only_production_stability():
     assert original["points"] == altered["points"]
     assert len({point["difficulty"] for point in original["points"]}) > 1
     assert original["metadata"]["production_use"] is False
+
+
+def test_shared_flow_profile_is_explicit_versioned_schema():
+    records = _records()
+    for record, base_time in zip(records, (1.0, 0.66, 0.33, 0.0)):
+        record["sigma"] = 12.0 * base_time / (1.0 + 11.0 * base_time)
+    profile = build_profile(
+        records,
+        profile_id="flow-test",
+        bins=4,
+        experimental_stability_density=True,
+        weights=WEIGHTS,
+        shared_flow_density=True,
+        shared_flow_video_shift=12.0,
+    )
+    assert profile["version"] == 2
+    assert profile["domain"] == "shared-base-time-progress-density"
+    assert all(set(point) == {"progress", "density"} for point in profile["points"])
+    assert profile["metadata"]["base_scheduler"] == "uniform_linspace"
+    assert profile["metadata"]["profile_semantics"] == "immutable_offline_shared_base_time_density"
+    assert profile["metadata"]["source_video_shift"] == 12.0
+    assert profile["metadata"]["evidence_source"] == "production_actual_trajectory"
+    assert profile["metadata"]["comparison_metrics_used_for_density"] is False
+    assert profile["metadata"]["production_use"] is False
+    assert flow_profile_from_dict(profile).profile_id == "flow-test"
+
+
+def test_shared_flow_profile_requires_source_shift_metadata():
+    with pytest.raises(ValueError, match="source video shift"):
+        build_profile(
+            _records(),
+            profile_id="flow-test",
+            bins=4,
+            experimental_stability_density=True,
+            weights=WEIGHTS,
+            shared_flow_density=True,
+        )
 
 
 def test_replay_copies_do_not_duplicate_production_stability_evidence():

@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "id": "h3_uniform_neutral",
+  "model_family": "MiniMax-H3 audiovisual shifted flow",
+  "status": "neutral-research-control",
+  "domain": "shared-base-time-progress-density",
+  "points": [
+    {"progress": 0.0, "density": 1.0},
+    {"progress": 1.0, "density": 1.0}
+  ],
+  "metadata": {
+    "density_source": "neutral_control",
+    "evidence_source": "neutral_control",
+    "base_scheduler": "uniform_linspace",
+    "comparison_metrics_used_for_density": false,
+    "production_use": false,
+    "note": "Neutral v2 shared-base-time profile for the experimental H3 scheduler. It does not alter the uniform linspace baseline."
+  }
+}
