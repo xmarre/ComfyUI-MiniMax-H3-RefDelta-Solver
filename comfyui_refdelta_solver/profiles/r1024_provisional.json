@@ -3,7 +3,7 @@
   "id": "r1024_provisional",
   "model_family": "MiniMax-H3 Pruned Ref-Delta Fused",
   "rank": 1024,
-  "status": "provisional-uncalibrated",
+  "status": "neutral-compatibility",
   "domain": "video-sigma-progress-over-beta-prior",
   "points": [
     {"progress": 0.0, "difficulty": 1.0},
@@ -20,6 +20,7 @@
     "compressed_matrix_mean_capture": 0.4962,
     "exact_vector_bias_patches": 267,
     "base_scheduler": {"name": "beta", "alpha": 0.6, "beta": 0.6},
-    "note": "Neutral density until matched same-state fused/reference telemetry establishes a time-dependent error profile. AdaLN curvature is intentionally not used without measured correlation."
+    "production_recommendation": "Use ComfyUI BasicScheduler with beta. This profile is retained only for saved-workflow compatibility and scheduler research.",
+    "note": "Neutral density. Same-state FL2VA/Ref2VA diagnostics are not a scheduler oracle and do not drive production scheduler density."
   }
 }

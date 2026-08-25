@@ -32,9 +32,26 @@ def bounded_ratio(numerator: torch.Tensor, denominator: torch.Tensor) -> torch.T
     return torch.nan_to_num(ratio / (1.0 + ratio), nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
 
 
+def stochastic_pressure_from_ratio(ratio: torch.Tensor) -> torch.Tensor:
+    """Smoothly bound an ungated stochastic/movement ratio without hard saturation."""
+    ratio = torch.nan_to_num(ratio, nan=0.0, posinf=1e9, neginf=0.0).clamp_min(0.0)
+    return (ratio / (1.0 + ratio)).clamp(0.0, 1.0)
+
+
 @dataclass(frozen=True, slots=True)
 class StreamLayout:
     video_elements: int | None
+    video_shape: tuple[int, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.video_elements is not None and self.video_elements <= 0:
+            raise ValueError("video_elements must be positive")
+        if self.video_shape is not None:
+            if len(self.video_shape) != 4 or any(size <= 0 for size in self.video_shape):
+                raise ValueError("video_shape must be a positive (C, T, H, W) tuple")
+            elements = math.prod(self.video_shape)
+            if self.video_elements is None or elements != self.video_elements:
+                raise ValueError("video_shape does not match video_elements")
 
     def split(self, value: torch.Tensor) -> dict[str, torch.Tensor]:
         if self.video_elements is None:
@@ -46,6 +63,53 @@ class StreamLayout:
             "audio": value[..., self.video_elements :],
         }
 
+    def video_to_latent(self, value: torch.Tensor) -> torch.Tensor:
+        """View a packed video stream as ``[B, C, T, H, W]`` safely."""
+        if self.video_elements is None or self.video_shape is None:
+            raise ValueError("packed H3 video shape is unavailable")
+        if (
+            value.ndim not in (2, 3)
+            or (value.ndim == 3 and value.shape[-2] != 1)
+            or value.shape[-1] != self.video_elements
+        ):
+            raise ValueError(
+                "packed H3 video stream must have shape [B, video_elements] "
+                "or [B, 1, video_elements]"
+            )
+        return value.reshape(value.shape[0], *self.video_shape)
+
+    def latent_to_video(
+        self,
+        value: torch.Tensor,
+        packed_like: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """View ``[B, C, T, H, W]`` as the corresponding packed video stream."""
+        if self.video_elements is None or self.video_shape is None:
+            raise ValueError("packed H3 video shape is unavailable")
+        if value.ndim != 5 or tuple(value.shape[1:]) != self.video_shape:
+            raise ValueError(
+                f"video latent must have shape [B, {', '.join(map(str, self.video_shape))}]"
+            )
+        if packed_like is None:
+            return value.reshape(value.shape[0], self.video_elements)
+        if (
+            packed_like.shape[0] != value.shape[0]
+            or packed_like.shape[-1] != self.video_elements
+            or packed_like.ndim not in (2, 3)
+            or (packed_like.ndim == 3 and packed_like.shape[-2] != 1)
+        ):
+            raise ValueError("packed_like does not match the declared video layout")
+        return value.reshape(packed_like.shape)
+
+    def combine(self, video: torch.Tensor, audio: torch.Tensor) -> torch.Tensor:
+        if self.video_elements is None:
+            raise ValueError("cannot combine streams without a packed H3 stream layout")
+        if video.ndim != audio.ndim or video.shape[:-1] != audio.shape[:-1]:
+            raise ValueError("video and audio streams have incompatible packed shapes")
+        if video.shape[-1] != self.video_elements:
+            raise ValueError("video stream does not match the declared layout")
+        return torch.cat((video, audio), dim=-1)
+
 
 @dataclass(slots=True)
 class TrajectoryObservation:
@@ -55,6 +119,10 @@ class TrajectoryObservation:
     movement_rms: torch.Tensor
     risk: torch.Tensor
     stream_risks: dict[str, torch.Tensor]
+    trajectory_risk: torch.Tensor
+    stream_trajectory_risks: dict[str, torch.Tensor]
+    stochastic_pressure: torch.Tensor
+    stream_stochastic_pressures: dict[str, torch.Tensor]
     components: dict[str, dict[str, torch.Tensor]]
 
 
@@ -66,6 +134,9 @@ class TrajectoryHistory:
         self.previous_first: torch.Tensor | None = None
         self.previous_coordinate: float | None = None
         self.two_back_coordinate: float | None = None
+        # Ratios are measured from the native (pre-adaptation) stochastic
+        # increment. They therefore remain independent of the gate chosen from
+        # this history and cannot create a controller self-feedback loop.
         self.previous_stochastic_ratios: dict[str, torch.Tensor] | None = None
 
     def reset(self) -> None:
@@ -103,6 +174,8 @@ class TrajectoryHistory:
             direction = cosine(first, self.previous_first)
 
         stream_risks: dict[str, torch.Tensor] = {}
+        stream_trajectory_risks: dict[str, torch.Tensor] = {}
+        stream_stochastic_pressures: dict[str, torch.Tensor] = {}
         components: dict[str, dict[str, torch.Tensor]] = {}
         current_streams = layout.split(raw)
         previous_streams = layout.split(self.previous_raw) if self.previous_raw is not None else {}
@@ -115,7 +188,7 @@ class TrajectoryHistory:
 
         local_span = abs(next_coordinate - coordinate)
         for name, current in current_streams.items():
-            signals: list[torch.Tensor] = []
+            trajectory_signals: list[torch.Tensor] = []
             values: dict[str, torch.Tensor] = {}
             if name in first_streams:
                 first_norm = rms(first_streams[name])
@@ -123,21 +196,21 @@ class TrajectoryHistory:
                 if name in second_streams:
                     curvature = bounded_ratio(rms(second_streams[name]) * local_span, first_norm)
                     values["curvature"] = curvature
-                    signals.append(curvature)
+                    trajectory_signals.append(curvature)
                 if name in prior_first_streams:
                     direction_change = (1.0 - cosine(first_streams[name], prior_first_streams[name])) * 0.5
                     values["direction_change"] = direction_change
-                    signals.append(direction_change)
+                    trajectory_signals.append(direction_change)
                     prior_norm = rms(prior_first_streams[name])
                     eps = torch.finfo(first_norm.dtype).eps
                     magnitude_jump = torch.tanh(torch.abs(torch.log((first_norm + eps) / (prior_norm + eps))))
                     values["magnitude_jump"] = magnitude_jump
-                    signals.append(magnitude_jump)
+                    trajectory_signals.append(magnitude_jump)
                 if name in previous_streams and name in prior_first_streams and self.previous_coordinate is not None:
                     predicted = previous_streams[name] + (coordinate - self.previous_coordinate) * prior_first_streams[name]
                     extrapolation_error = bounded_ratio(rms(current - predicted), rms(current - previous_streams[name]))
                     values["extrapolation_error"] = extrapolation_error
-                    signals.append(extrapolation_error)
+                    trajectory_signals.append(extrapolation_error)
 
             stage_reference = rms(stage1_streams[name])
             stage_ratio = zero
@@ -147,19 +220,55 @@ class TrajectoryHistory:
                 stage_ratio = torch.maximum(stage_ratio, bounded_ratio(rms(stage3_streams[name]), stage_reference))
             values["stage_correction_ratio"] = stage_ratio
             if stage2 is not None or stage3 is not None:
-                signals.append(stage_ratio)
-            if self.previous_stochastic_ratios is not None and name in self.previous_stochastic_ratios:
-                noise_signal = torch.nan_to_num(self.previous_stochastic_ratios[name], nan=0.0, posinf=1.0).clamp(0.0, 1.0)
-                values["previous_stochastic_ratio"] = noise_signal
-                signals.append(noise_signal)
+                trajectory_signals.append(stage_ratio)
 
-            risk = torch.stack(signals).mean() if signals else zero
+            trajectory_risk = torch.stack(trajectory_signals).mean() if trajectory_signals else zero
+            trajectory_risk = (trajectory_risk * sensitivity).clamp(0.0, 1.0)
+            stream_trajectory_risks[name] = trajectory_risk
+
+            combined_signals = list(trajectory_signals)
+            if self.previous_stochastic_ratios is not None and name in self.previous_stochastic_ratios:
+                native_ratio = torch.nan_to_num(
+                    self.previous_stochastic_ratios[name],
+                    nan=0.0,
+                    posinf=1e9,
+                    neginf=0.0,
+                ).clamp_min(0.0)
+                pressure = stochastic_pressure_from_ratio(native_ratio)
+                values["previous_native_stochastic_ratio"] = native_ratio
+                values["previous_stochastic_pressure"] = pressure
+                stream_stochastic_pressures[name] = pressure
+                combined_signals.append(pressure)
+
+            risk = torch.stack(combined_signals).mean() if combined_signals else zero
             risk = (risk * sensitivity).clamp(0.0, 1.0)
             stream_risks[name] = risk
             components[name] = values
 
         combined = torch.stack(list(stream_risks.values())).amax() if stream_risks else zero
-        return TrajectoryObservation(first, second, direction, movement, combined, stream_risks, components)
+        combined_trajectory = (
+            torch.stack(list(stream_trajectory_risks.values())).amax()
+            if stream_trajectory_risks
+            else zero
+        )
+        combined_pressure = (
+            torch.stack(list(stream_stochastic_pressures.values())).amax()
+            if stream_stochastic_pressures
+            else zero
+        )
+        return TrajectoryObservation(
+            first,
+            second,
+            direction,
+            movement,
+            combined,
+            stream_risks,
+            combined_trajectory,
+            stream_trajectory_risks,
+            combined_pressure,
+            stream_stochastic_pressures,
+            components,
+        )
 
     def commit(self, raw: torch.Tensor, coordinate: float, first: torch.Tensor | None) -> None:
         if self.previous_raw is not None and (

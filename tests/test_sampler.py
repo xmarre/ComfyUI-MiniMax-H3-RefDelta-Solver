@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from comfyui_refdelta_solver.config import RefDeltaSamplerConfig
-from comfyui_refdelta_solver.sampler import sample_refdelta_er_sde
+from comfyui_refdelta_solver.sampler import _stochastic_movement_ratio, sample_refdelta_er_sde
 from comfyui_refdelta_solver.spectrum_interop import (
     SPECTRUM_BRIDGE_KEY,
     SPECTRUM_INTEROP_CONTRACT,
@@ -45,6 +45,9 @@ def test_native_equivalence_mode_delegates_without_reimplementation(monkeypatch)
         stochastic_adaptation_strength=0.0,
         trajectory_correction=False,
         telemetry=False,
+        stochastic_control_mode="spatiotemporal_stability",
+        static_video_stochastic_adaptation_strength=0.5,
+        video_stability_restore_strength=1.0,
     )
     result = sample_refdelta_er_sde(
         model,
@@ -64,9 +67,58 @@ def test_native_equivalence_mode_delegates_without_reimplementation(monkeypatch)
     assert received["kwargs"]["max_stage"] == 2
 
 
-def test_invalid_stage_fails_before_model_access():
+def test_calibration_capture_disables_native_delegation():
+    config = RefDeltaSamplerConfig(
+        adaptive_order=False,
+        stochastic_adaptation_strength=0.0,
+        trajectory_correction=False,
+        telemetry=False,
+        calibration_capture=True,
+        calibration_id="capture",
+    )
+    assert not config.is_native_equivalence_mode
+
+
+@pytest.mark.parametrize("max_stage", (0, 4, 1.5, True))
+def test_invalid_max_stage_fails_before_model_access(max_stage):
+    class ModelAccessSpy:
+        accessed = False
+
+        @property
+        def inner_model(self):
+            self.accessed = True
+            raise AssertionError("model must not be accessed before max_stage validation")
+
+    model = ModelAccessSpy()
     with pytest.raises(ValueError, match="max_stage"):
-        sample_refdelta_er_sde(object(), torch.tensor([1.0]), torch.tensor([1.0, 0.0]), max_stage=4)
+        sample_refdelta_er_sde(
+            model,
+            torch.ones(1),
+            torch.tensor([1.0, 0.0]),
+            max_stage=max_stage,
+        )
+    assert model.accessed is False
+
+
+def test_stochastic_movement_ratio_is_undefined_without_real_movement():
+    stochastic = torch.ones(4)
+    assert _stochastic_movement_ratio(stochastic, torch.zeros(4)) is None
+    assert _stochastic_movement_ratio(
+        stochastic,
+        torch.full((4,), torch.finfo(torch.float32).tiny / 4),
+    ) is None
+
+    ratio = _stochastic_movement_ratio(stochastic, torch.full((4,), 0.5))
+    assert ratio is not None
+    assert ratio.item() == pytest.approx(2.0)
+
+
+def test_stochastic_movement_ratio_keeps_small_real_bfloat16_movement():
+    stochastic = torch.ones(4, dtype=torch.bfloat16)
+    movement = torch.full((4,), 1e-3, dtype=torch.bfloat16)
+    ratio = _stochastic_movement_ratio(stochastic, movement)
+    assert ratio is not None
+    assert ratio.float().item() == pytest.approx(1000.0, rel=0.02)
 
 
 def test_sampler_publishes_versioned_spectrum_contract():

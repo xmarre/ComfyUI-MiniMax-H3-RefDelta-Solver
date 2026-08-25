@@ -35,6 +35,8 @@ sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 assert module.NODE_CLASS_MAPPINGS
 assert module.NODE_DISPLAY_NAME_MAPPINGS
+assert "MiniMaxH3RefDeltaProductionSampler" in module.NODE_CLASS_MAPPINGS
+assert module.NODE_DISPLAY_NAME_MAPPINGS["MiniMaxH3RefDeltaProductionSampler"] == "MiniMax H3 RefDelta Stability Sampler"
 '''
 
     result = subprocess.run(

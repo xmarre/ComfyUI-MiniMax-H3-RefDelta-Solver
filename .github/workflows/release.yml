@@ -38,7 +38,7 @@ jobs:
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "tag=v${version}" >> "${GITHUB_OUTPUT}"
 
-      - name: Build release archive
+      - name: Build release archive and notes
         env:
           VERSION: ${{ steps.version.outputs.version }}
         shell: bash
@@ -51,6 +51,31 @@ jobs:
             --output="dist/${archive}" \
             HEAD
           (cd dist && sha256sum "${archive}" > SHA256SUMS)
+
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          heading = f"# MiniMax H3 RefDelta Solver v{version}"
+          lines = Path("RELEASE_NOTES.md").read_text(encoding="utf-8").splitlines()
+
+          try:
+              start = lines.index(heading)
+          except ValueError as exc:
+              raise SystemExit(
+                  f"RELEASE_NOTES.md is missing the current-version heading: {heading}"
+              ) from exc
+
+          end = len(lines)
+          for index in range(start + 1, len(lines)):
+              if lines[index].startswith("# "):
+                  end = index
+                  break
+
+          current = "\n".join(lines[start:end]).rstrip() + "\n"
+          Path("dist/RELEASE_NOTES_CURRENT.md").write_text(current, encoding="utf-8")
+          PY
 
       - name: Publish GitHub release
         env:
@@ -69,4 +94,4 @@ jobs:
             dist/SHA256SUMS \
             --target "${RELEASE_SHA}" \
             --title "MiniMax H3 RefDelta Solver ${TAG}" \
-            --notes-file RELEASE_NOTES.md
+            --notes-file dist/RELEASE_NOTES_CURRENT.md

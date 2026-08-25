@@ -1,11 +1,26 @@
 # ComfyUI MiniMax-H3 RefDelta Solver
 
-A dedicated ER-SDE-derived sampler and beta-prior scheduler for the
+A dedicated ER-SDE-derived sampler for the
 [MiniMax-H3 Pruned Ref-Delta Fused rank-1024 checkpoint](https://huggingface.co/xmarre/MiniMax-H3-Pruned-Ref-Delta-Fused-r1024-ComfyUI).
 
-This project targets a specific numerical problem: the fused checkpoint can make useful final predictions while its intermediate denoised trajectory differs from ordinary H3. The sampler measures that trajectory in ER-SDE's real solver coordinate and smoothly reduces history-dependent corrections when the local anchors become unreliable. It preserves ComfyUI's `ModelSamplingAV`, packed audio/video latent, model-output conversion, and H3 conditioning path.
+The target checkpoint is conceptually FL2VA plus a rank-1024 approximation of the
+Ref2VA-from-FL2VA parameter delta, with exact/non-matrix delta pieces where applicable,
+and the production checkpoint also contains INT8 ConvRot approximation effects. Genuine
+Ref2VA is useful for same-state diagnostics of the imported delta. It is **not** a quality
+oracle and is **not** used to drive the production scheduler.
 
-> **Calibration status:** the sampler controls and bundled `r1024_provisional` scheduler profile are experimental. The profile deliberately has neutral error weights until matched same-state fused/Ref2VA telemetry is collected. Neutral means the scheduler remains a continuous-table counterpart of ComfyUI's beta(0.6, 0.6) prior. No unmeasured AdaLN heuristic is presented as a calibrated quality improvement.
+## Production recommendation
+
+Use:
+
+- **MiniMax H3 RefDelta Stability Sampler**;
+- ComfyUI **BasicScheduler** with `scheduler = beta`;
+- the normal MiniMax-H3 `ModelSamplingAV` path;
+- Spectrum MiniMax H3 v0.2.20+ when Spectrum forecasting is enabled.
+
+The custom RefDelta scheduler is retained only for saved-workflow compatibility and
+scheduler research. The bundled `r1024_provisional` profile is neutral and should not be
+interpreted as a calibrated production schedule.
 
 ## Install
 
@@ -16,120 +31,307 @@ cd ComfyUI/custom_nodes
 git clone https://github.com/xmarre/ComfyUI-MiniMax-H3-RefDelta-Solver.git
 ```
 
-The custom node has no dependencies beyond current ComfyUI. It is designed for MiniMax-H3 packed audio/video sampling and fails explicitly when `ModelSamplingAV` is not present.
+The custom node has no runtime dependencies beyond current ComfyUI.
 
 ## Nodes
 
-### MiniMax H3 RefDelta Sampler
+### MiniMax H3 RefDelta Stability Sampler
 
-Connect its `SAMPLER` output to `SamplerCustomAdvanced` (or another node accepting ComfyUI custom samplers).
+This is the recommended production node. Its production defaults are built directly into
+the node while every production-relevant knob remains editable. There is no separate
+sampler profile or calibration file to select. Diagnostic capture controls and legacy
+controller-mode selection are kept out of this node so ordinary workflows do not mix
+production tuning with research capture state.
 
-The default path uses every real model evaluation and keeps all history local to one sampler invocation:
+Current empirically validated defaults:
 
-- nonuniform first and second divided differences in current ComfyUI's ER coordinate;
-- dimensionless risk from curvature, derivative direction/magnitude change, realized extrapolation error, ER stage ratios, and stochastic displacement;
-- smooth stage-2/stage-3 gates instead of discontinuous order switching;
-- bounded stochastic adaptation that returns to native ER-SDE behavior near the endpoint;
-- separate video/audio risk reductions;
-- optional Taylor trajectory correction, **off by default**, bounded by recent raw x0 movement and never written back into history.
+```text
+adaptive_order = true
+risk_sensitivity = 1.00
 
-The advanced controls are intentionally bounded. Start with the defaults. `trajectory_correction` should remain off until diagnostic runs support it.
+stochastic_adaptation_strength = 0.50
+minimum_stochastic_multiplier = 0.50
 
-For a strict stock baseline, set:
+trajectory_correction = true
+video_correction_strength = 0.15
+audio_correction_strength = 0.05
+correction_bound = 0.50
+endpoint_fidelity_fraction = 0.15
+
+s_noise = 1.00
+max_stage = 3
+
+video_stochastic_strength_scale = 1.00
+audio_stochastic_strength_scale = 1.00
+static_video_stochastic_adaptation_strength = 0.25
+video_stability_restore_strength = 1.00
+
+video_stability_motion_low = 0.15
+video_stability_motion_high = 0.60
+video_stability_diffusion_low = 0.05
+video_stability_diffusion_high = 0.50
+video_stability_diffusion_weight = 0.20
+video_stability_normalization_floor = 0.10
+video_stability_gamma = 1.00
+
+video_stability_spatial_radius = 2
+video_stability_temporal_radius = 2
+video_stability_ema = 0.70
+video_stability_start_fraction = 0.10
+video_stability_full_fraction = 0.30
+stochastic_gate_slew_limit = 0.00
+```
+
+These values are the current production candidate for the rank-1024 INT8 ConvRot checkpoint,
+not a claim that one setting is universally optimal for every prompt/reference stack. The
+node keeps the knobs exposed specifically so tuning does not require code changes.
+
+Same-seed validation of the streamlined Stability Sampler against the advanced node produced
+cell-for-cell identical CSV telemetry and byte-for-byte identical JSONL telemetry when both
+were configured with these values. The streamlined node therefore changes workflow UX, not
+the sampler/controller path.
+
+#### What the stability controller does
+
+The dynamic video policy is driven by the actual-only video risk. The audio stream has its
+own scalar risk/gate. Video additionally receives a smooth `[B,1,T,H,W]` latent-space
+stability map built from:
+
+- channel-RMS motion between neighboring latent time slices;
+- channel-RMS change from the previous **actual** denoised prediction;
+- configurable temporal/diffusion thresholds and diffusion weighting;
+- gamma shaping, spatial/temporal smoothing, actual-only EMA, and a progress ramp.
+
+Static regions interpolate toward `static_video_stochastic_adaptation_strength`; moving or
+uncertain regions remain closer to the dynamic `stochastic_adaptation_strength` policy.
+The controller does not decode pixels, use optical flow, or add model evaluations/NFE.
+
+The static target is deliberately a separate policy, not a global stochastic floor. In real
+artifact testing this distinction mattered: globally raising the minimum multiplier could
+introduce its own jitter, while selective low-motion restoration could suppress fine-detail
+background shimmer without forcing the whole video onto the same stochastic behavior.
+
+`endpoint_fidelity_fraction` remains independent and fades the final adapted gate toward
+native multiplier `1` near the endpoint. Optional `stochastic_gate_slew_limit` acts before
+endpoint restoration; `0` disables it.
+
+#### Main tuning controls
+
+| Control | Effect |
+| --- | --- |
+| `stochastic_adaptation_strength` | Dynamic-region adaptation strength |
+| `minimum_stochastic_multiplier` | Global lower bound on the stochastic multiplier |
+| `static_video_stochastic_adaptation_strength` | Static-region target policy |
+| `video_stability_motion_low/high` | Which latent regions count as temporally stable |
+| `video_stability_diffusion_low/high` | Whether those regions are also settled across actual denoising steps |
+| `video_stability_diffusion_weight` | Importance of actual-to-actual stability |
+| `video_stability_gamma` | Selectivity of restoration confidence |
+| spatial/temporal radii + EMA | Smoothness/persistence of the stability map |
+| start/full fractions | When stability restoration becomes active |
+| `stochastic_gate_slew_limit` | Optional per-step gate-change bound |
+
+Practical tuning order:
+
+1. Keep `stochastic_adaptation_strength`, the stochastic floor, and static target separate.
+2. If static detail still shimmers, inspect telemetry/maps before widening thresholds.
+3. If the map identifies the correct regions but restoration is too weak, tune the static
+   target rather than globally raising the floor.
+4. If composition/motion changes too much, make restoration more selective with thresholds
+   or gamma before applying a stronger policy everywhere.
+5. Keep audio tuning independent through `audio_stochastic_strength_scale`.
+
+### [Advanced/Diagnostic] MiniMax H3 RefDelta Sampler
+
+This is the original node ID retained for saved workflows, manual controller experiments,
+and diagnostic capture. Its defaults intentionally preserve released behavior:
+
+- `stochastic_control_mode = legacy_global`;
+- `stochastic_adaptation_strength = 0.50`;
+- `minimum_stochastic_multiplier = 0.25`;
+- `trajectory_correction = false`.
+
+It additionally exposes:
+
+- `legacy_global`, `streamwise`, and `spatiotemporal_stability` controller selection;
+- `calibration_capture` / `calibration_id` for disk-backed diagnostic capture;
+- the same detailed stability controls as the production node.
+
+The legacy defaults are **not** the current recommended rank-1024 production defaults; they
+exist so older saved workflows do not silently change behavior after upgrading.
+
+For a strict stock ER-SDE baseline:
 
 ```text
 adaptive_order = false
 stochastic_adaptation_strength = 0
 trajectory_correction = false
 debug_telemetry = false
+calibration_capture = false
 ```
 
-That configuration delegates directly to ComfyUI's native `sample_er_sde`; it does not maintain a second approximation of the baseline.
+That path delegates directly to current ComfyUI `sample_er_sde`.
 
-### MiniMax H3 RefDelta Scheduler
+### MiniMax H3 RefDelta Comparison Replay
 
-Connect its `SIGMAS` output to the custom sampler path. The scheduler starts from a continuous form of ComfyUI's beta(0.6, 0.6) prior, then redistributes beta-step fractions according to a versioned rank profile. Production sampling only needs the profile JSON; it never needs the genuine reference model.
+This is the preferred same-state diagnostic path. The historical `calibration_*` names are
+kept for workflow/file compatibility, but the data is now treated explicitly as
+**diagnostic comparison data**, not scheduler calibration.
 
-The included profile is `r1024_provisional`. It preserves the beta prior because its difficulty density is neutral. Replace it with a profile created from representative same-state diagnostic runs before calling the schedule rank-1024-calibrated.
+A complete comparison uses three executions of the same workflow while loading one full H3
+model at a time.
 
-### MiniMax H3 RefDelta Reference Diagnostic
+#### Pass 1 — fused diagnostic capture
 
-This development guider evaluates the fused and genuine Ref2VA models sequentially on the exact same packed latent, timestep, CFG, prompt conditioning, and reference conditioning. Enable `debug_telemetry` on the sampler to record:
+Use the advanced/diagnostic sampler with the fused model and enable:
 
-- video/audio x0 cosine and relative error;
-- video/audio carried-solver velocity cosine and relative error.
+```text
+calibration_capture = true
+calibration_id = int8-convrot-r1024-test-01
+```
 
-The carried audio latent uses the video solver coordinate by ComfyUI design. Multiplying both compared audio velocities by the same physical audio-sigma conversion does not change these cosine or relative-error metrics.
+For a clean vector-field comparison, use stock beta, Spectrum off, and optionally disable
+sampler adaptations:
 
-This mode roughly doubles transformer evaluations, requires both models on the same load device, and is not part of production inference.
+```text
+adaptive_order = false
+stochastic_adaptation_strength = 0
+trajectory_correction = false
+```
 
-## Telemetry
+The capture writes exact packed sampler states, fused x0 values, sigmas,
+actual/forecast classification, scalar telemetry, and the final pre-inverse-scaling sampler
+state under:
 
-When enabled, scalar-only `.jsonl` and `.csv` files are written under:
+```text
+ComfyUI/output/refdelta_calibration/<calibration_id>/
+```
+
+#### Pass 2 — FL2VA
+
+Switch the MODEL loader to FL2VA, replace the sampler with
+`MiniMax H3 RefDelta Comparison Replay`, use the same `calibration_id`, and set:
+
+```text
+comparison_label = fl2va
+```
+
+Only captured actual steps are evaluated at the exact captured state/sigma.
+
+#### Pass 3 — Ref2VA
+
+Switch the MODEL loader to genuine Ref2VA and set:
+
+```text
+comparison_label = ref2va
+```
+
+The completed FL2VA pass is required. Replay measures the true `Ref2VA - FL2VA` field
+against the fused `fused - FL2VA` field, including video/audio cosine, magnitude,
+projection, residual, and orthogonal components.
+
+Comparison replay always returns the captured fused final sampler state, preserving the
+original Continuum trajectory across diagnostic passes. Spectrum is rejected on comparison
+passes. FL2VA/Ref2VA metrics are explanatory and never enter production stochastic control
+or scheduler density automatically.
+
+### [Legacy/Research] MiniMax H3 RefDelta Scheduler
+
+The custom profile-density scheduler is deprecated for ordinary production workflows.
+Existing saved workflows continue to work, and the scheduler/profile code remains available
+for explicit research.
+
+For production, use ComfyUI:
+
+```text
+BasicScheduler
+scheduler = beta
+```
+
+The bundled `r1024_provisional` profile is a neutral beta-prior compatibility profile.
+There is no production calibration file to select from the FL2VA/Ref2VA replay workflow.
+
+`tools/build_profile.py` is therefore research-only. It:
+
+- strips `comparison_*` and `ref_delta_*` fields before scheduler binning;
+- deduplicates replay copies of the same production telemetry;
+- emits neutral difficulty by default;
+- requires `--experimental-stability-density` for any non-neutral density;
+- marks generated profiles as non-production research output.
+
+Example research use:
+
+```bash
+python tools/build_profile.py \
+  ComfyUI/output/refdelta_telemetry/*.csv \
+  --output /tmp/r1024_scheduler_research.json \
+  --id r1024_scheduler_research \
+  --experimental-stability-density
+```
+
+Do not use Ref2VA distance as a scheduler error metric.
+
+## Risk/evidence model
+
+RefDelta keeps two histories:
+
+- solver history: every value returned to ER-SDE, including Spectrum forecasts;
+- evidence history: actual model evaluations only.
+
+Adaptive ER stage order uses deterministic trajectory risk. Stochastic adaptation uses
+combined trajectory/stochastic evidence. Stochastic pressure is measured from the **native
+pre-gate** ER-SDE increment relative to real denoised movement, preventing the controller
+from reducing its own future evidence.
+
+Spectrum forecasts may consume the latest actual-only risk, stochastic pressure, and cached
+stability map, but they never become motion/diffusion/EMA/x0 evidence. Spectrum receives the
+exact final stochastic increment actually added to the state.
+
+## Telemetry and stability maps
+
+When `debug_telemetry` is enabled, scalar JSONL/CSV telemetry is written under:
 
 ```text
 ComfyUI/output/refdelta_telemetry/
 ```
 
-Each actual model evaluation records the requested solver, sigma, effective audio sigma, latent/x0 movement, derivative/curvature, direction cosine, stage contribution, stochastic, adaptive-order, correction, and reference fields. Video and audio reductions are separate. Only raw x0 anchors and the derivative tensors required by the solver persist between steps; telemetry retains scalars, not latent snapshots.
+It includes trajectory/stochastic risk, native/applied stochastic values, controller mode,
+dynamic/static/audio targets, applied video-gate distribution, restore-mask distribution,
+motion/diffusion summaries, progress/source state, and slew activity.
 
-Build a profile from multiple representative diagnostic files:
+When both `debug_telemetry` and `debug_stability_maps` are enabled, nonterminal actual steps
+also write compressed NPZ maps containing:
 
-```bash
-python tools/build_profile.py \
-  ComfyUI/output/refdelta_telemetry/*.csv \
-  --output comfyui_refdelta_solver/profiles/r1024_calibrated.json \
-  --id r1024_calibrated
-```
+- temporal motion ratio;
+- diffusion-change ratio when available;
+- final restore mask;
+- final applied video gate;
+- seed, step, sigma, video shape, and controller config metadata.
 
-The builder bins normalized video-sigma progress and uses robust per-bin reference error, its local slope, and observed trajectory curvature. Inspect the result and validate it on held-out prompts/seeds before adding it as a default. A trajectory-only profile requires the explicit `--allow-no-reference` flag and remains experimental.
-
-Useful analysis tools:
-
-```bash
-python tools/compare_runs.py run-a.csv run-b.csv
-python tools/analyze_adaln_curve.py model.safetensors telemetry.csv
-```
-
-`analyze_adaln_curve.py` only reports correlation; AdaLN curvature is not used by the sampler or scheduler without measured evidence.
-
-## What the static checkpoint analysis establishes
-
-The published rank-1024 sidecar shows a mixed approximation, not a uniform rank limit:
-
-- 267 vector/bias patches are exact;
-- the 51 AdaLN projection matrices are effectively exact because their input width is only eight;
-- 264 matrix adapters are rank-limited;
-- overall weighted retained matrix-delta energy is about 99.43%, but that aggregate is dominated by exact/small tensors;
-- among actually compressed matrices, median retained energy is about 46.11% and mean retained energy about 49.62%; the principal block groups are approximately 41.50% (`fc1`), 45.81% (`fc2`), 46.98% (`qkv`), and 59.65% (`out_proj`).
-
-This supports investigating a mismatched local vector field. It does **not** establish when the mismatch occurs, whether AdaLN curvature predicts it, or that a particular correction improves output. Those require same-state runs.
-
-## Required calibration run set
-
-For a defensible production profile, collect at least:
-
-1. several prompt/reference cases spanning motion, texture, speech/music, and quiet audio;
-2. multiple seeds per case at the intended step count and CFG;
-3. fused-only baseline telemetry plus same-state genuine Ref2VA telemetry;
-4. held-out A/B runs for the resulting scheduler and sampler settings;
-5. interruption/restart and changed latent-shape checks on the real GPU workflow.
-
-Judge the final media as well as the telemetry. Intermediate sharpness alone is not an objective.
+Forecasts never emit evidence maps.
 
 ## Spectrum compatibility
 
-RefDelta Solver v0.2.0 is compatible with
-[ComfyUI-Spectrum-MiniMax-H3 v0.2.18+](https://github.com/xmarre/ComfyUI-Spectrum-MiniMax-H3).
-The integration uses a fail-closed API-v1 contract:
+The reviewed baseline is
+[ComfyUI-Spectrum-MiniMax-H3 v0.2.20+](https://github.com/xmarre/ComfyUI-Spectrum-MiniMax-H3).
 
-- Spectrum labels each sampler result as an actual evaluation or forecast. RefDelta keeps every result in ER-SDE's solver history, but only actual model outputs enter its risk and trajectory-correction history.
-- RefDelta publishes the exact stochastic tensor after its risk and endpoint gates. Spectrum owns that final tensor for skipped-state compensation and seeded offline replay, so noise is neither estimated from the native formula nor applied twice.
-- Native-equivalence mode continues to delegate to ComfyUI's reviewed `sample_er_sde` and uses Spectrum's native ER-SDE tracking path.
-- A missing, stale, or mismatched bridge fails explicitly; Spectrum rejects unreviewed RefDelta versions before forecasting.
+Important invariants:
 
-The same-state reference diagnostic remains valid: forecast steps produce no reference result, while actual reference results are matched by sigma rather than sampler-loop ordinal.
-CI validates the interop-facing sampler behavior across the reviewed native ComfyUI matrix.
+- forecasts stay in solver history but out of RefDelta evidence history;
+- the immediate forecast after an actual step consumes that actual step's latest stochastic
+  evidence;
+- forecast gaps preserve the last valid actual native stochastic/movement ratios;
+- trajectory correction may target a forecast but uses only actual anchors/derivatives;
+- spatiotemporal stability evidence updates only on actual model calls;
+- Spectrum receives the exact post-controller stochastic increment;
+- missing/stale/mismatched bridge state fails explicitly.
+
+## Static checkpoint context
+
+The published rank-1024 sidecar shows a mixed approximation rather than a uniform rank
+limit: exact vector/bias pieces coexist with rank-limited matrix adapters. Overall retained
+energy is dominated by exact/small tensors, while actually compressed matrices retain much
+less of the original delta. This motivates trajectory-aware handling, but it does not make
+Ref2VA distance a quality metric or scheduler oracle.
 
 ## Development
 
@@ -140,8 +342,10 @@ python -m ruff check .
 python -m compileall -q comfyui_refdelta_solver tests tools
 ```
 
-CI also checks the instrumented no-adaptation path against current native ComfyUI ER-SDE fixtures and builds an installable wheel. Successful tests on `main` feed the release workflow; version changes can publish to the Comfy Registry when `REGISTRY_ACCESS_TOKEN` is configured.
+CI also checks native ER-SDE fixture parity across pinned ComfyUI revisions and builds the
+installable wheel.
 
 ## License
 
-GPL-3.0-or-later. The ER-SDE implementation is derived from GPL-licensed ComfyUI sampling code; see [LICENSE](LICENSE).
+GPL-3.0-or-later. The ER-SDE implementation is derived from GPL-licensed ComfyUI sampling
+code; see [LICENSE](LICENSE).

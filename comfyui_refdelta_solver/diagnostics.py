@@ -4,7 +4,8 @@ from dataclasses import dataclass
 
 import torch
 
-from .trajectory import StreamLayout, cosine, rms
+from .comparison import compare_fused_to_model
+from .trajectory import StreamLayout
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,28 +22,12 @@ def compare_same_state(
     reference_x0: torch.Tensor,
     layout: StreamLayout,
 ) -> dict[str, float]:
-    if fused_x0.shape != reference_x0.shape or fused_x0.shape != state.shape:
-        raise ValueError("same-state diagnostic tensors must have identical shapes")
-    if fused_x0.device != reference_x0.device or fused_x0.device != state.device:
-        raise ValueError("same-state diagnostic tensors must share a device")
-    if fused_x0.dtype != reference_x0.dtype or fused_x0.dtype != state.dtype:
-        raise ValueError("same-state diagnostic tensors must share a dtype")
+    """Legacy name for saved-workflow diagnostics.
 
-    sigma_value = sigma.flatten()[0].to(device=state.device, dtype=state.dtype).clamp_min(torch.finfo(state.dtype).eps)
-    fused_velocity = (state - fused_x0) / sigma_value
-    reference_velocity = (state - reference_x0) / sigma_value
-    fields: dict[str, float] = {}
-    for name, fused_stream in layout.split(fused_x0).items():
-        reference_stream = layout.split(reference_x0)[name]
-        fused_velocity_stream = layout.split(fused_velocity)[name]
-        reference_velocity_stream = layout.split(reference_velocity)[name]
-        x0_error = rms(fused_stream - reference_stream) / rms(reference_stream).clamp_min(torch.finfo(state.dtype).eps)
-        velocity_error = rms(fused_velocity_stream - reference_velocity_stream) / rms(reference_velocity_stream).clamp_min(torch.finfo(state.dtype).eps)
-        fields[f"{name}_x0_cosine"] = float(cosine(fused_stream, reference_stream).detach().cpu())
-        fields[f"{name}_x0_relative_error"] = float(torch.nan_to_num(x0_error, posinf=1e9).detach().cpu())
-        fields[f"{name}_velocity_cosine"] = float(cosine(fused_velocity_stream, reference_velocity_stream).detach().cpu())
-        fields[f"{name}_velocity_relative_error"] = float(torch.nan_to_num(velocity_error, posinf=1e9).detach().cpu())
-    return fields
+    New replay telemetry labels the compared model explicitly and calls
+    :func:`compare_fused_to_model` directly.
+    """
+    return compare_fused_to_model(state, sigma, fused_x0, reference_x0, layout)
 
 
 def spectrum_step_is_forecast(model_options: dict | None) -> bool:
