@@ -184,6 +184,14 @@ def _joined_tail_base(
     return torch.cat((body, tail))
 
 
+def _resolve_tail_steps(tail_steps: int | None, steps: int) -> int:
+    if tail_steps is None:
+        return min(5, steps - 1)
+    if not isinstance(tail_steps, int) or tail_steps < 0 or tail_steps >= steps:
+        raise ValueError("tail_steps must be an integer in [0, effective_steps - 1]")
+    return tail_steps
+
+
 def _uniform_refinement_tail_base(
     steps: int,
     tail_steps: int,
@@ -352,7 +360,7 @@ def h3_uniform_flow_sigmas(
     *,
     phase: float = 0.5,
     power: float = 1.0,
-    tail_steps: int = 5,
+    tail_steps: int | None = None,
     tail_start: float = 0.15,
     tail_power: float = 2.0,
     beta_alpha: float = 0.6,
@@ -394,14 +402,14 @@ def h3_uniform_flow_sigmas(
         elif mode == "uniform_refinement_tail":
             base_time = _uniform_refinement_tail_base(
                 full_steps,
-                tail_steps,
+                _resolve_tail_steps(tail_steps, full_steps),
                 tail_start,
                 tail_power,
             )
         elif mode == "trailing_refined":
             base_time = _trailing_refined_base(
                 full_steps,
-                tail_steps,
+                _resolve_tail_steps(tail_steps, full_steps),
                 tail_start,
                 tail_power,
                 table.numel(),

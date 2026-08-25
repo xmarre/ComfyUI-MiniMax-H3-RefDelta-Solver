@@ -241,6 +241,42 @@ def build_profile(
             {"progress": point["progress"], "density": point["difficulty"]}
             for point in density
         ]
+    metadata = {
+        "input_files": input_files or [],
+        "input_records": len(records),
+        "unique_production_records": len(production_records),
+        "replayed_production_duplicates_removed": len(records) - len(production_records),
+        "populated_bins": len(points),
+        "density_source": (
+            "production_trajectory_stability_research"
+            if experimental_stability_density
+            else "neutral_compatibility"
+        ),
+        "weights": weights if experimental_stability_density else {},
+        "binned_production_stability": points,
+        "comparison_metrics_used_for_density": False,
+        "comparison_fields_embedded": False,
+        "production_scheduler": "comfyui_basic_scheduler_beta",
+        "production_use": False,
+        "base_scheduler": (
+            "uniform_linspace"
+            if shared_flow_density
+            else {"name": "beta", "alpha": 0.6, "beta": 0.6}
+        ),
+        "profile_semantics": (
+            "immutable_offline_shared_base_time_density"
+            if shared_flow_density
+            else "legacy_beta_prior_density"
+        ),
+    }
+    if shared_flow_density:
+        metadata["evidence_source"] = (
+            "production_actual_trajectory"
+            if experimental_stability_density
+            else "neutral_control"
+        )
+        metadata["source_video_shift"] = shared_flow_video_shift
+
     return {
         "version": 2 if shared_flow_density else 1,
         "id": profile_id,
@@ -253,40 +289,7 @@ def build_profile(
             else "video-sigma-progress-over-beta-prior"
         ),
         "points": output_points,
-        "metadata": {
-            "input_files": input_files or [],
-            "input_records": len(records),
-            "unique_production_records": len(production_records),
-            "replayed_production_duplicates_removed": len(records) - len(production_records),
-            "populated_bins": len(points),
-            "density_source": (
-                "production_trajectory_stability_research"
-                if experimental_stability_density
-                else "neutral_compatibility"
-            ),
-            "evidence_source": (
-                "production_actual_trajectory"
-                if experimental_stability_density
-                else "neutral_control"
-            ) if shared_flow_density else None,
-            "weights": weights if experimental_stability_density else {},
-            "binned_production_stability": points,
-            "comparison_metrics_used_for_density": False,
-            "comparison_fields_embedded": False,
-            "production_scheduler": "comfyui_basic_scheduler_beta",
-            "production_use": False,
-            "base_scheduler": (
-                "uniform_linspace"
-                if shared_flow_density
-                else {"name": "beta", "alpha": 0.6, "beta": 0.6}
-            ),
-            "profile_semantics": (
-                "immutable_offline_shared_base_time_density"
-                if shared_flow_density
-                else "legacy_beta_prior_density"
-            ),
-            "source_video_shift": shared_flow_video_shift if shared_flow_density else None,
-        },
+        "metadata": metadata,
     }
 
 

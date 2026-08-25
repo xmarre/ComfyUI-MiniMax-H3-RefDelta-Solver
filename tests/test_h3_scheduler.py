@@ -56,6 +56,20 @@ def test_all_continuous_modes_obey_output_invariants(mode, steps):
     assert first[-1].item() == 0.0
 
 
+@pytest.mark.parametrize("mode", ("uniform_refinement_tail", "trailing_refined"))
+@pytest.mark.parametrize("steps", (1, 2, 3, 4, 5))
+def test_tail_mode_default_resolves_for_short_schedules(mode, steps):
+    sigmas = h3_uniform_flow_sigmas(SyntheticModelSamplingAV(), steps, 1.0, mode)
+    assert sigmas.shape == (steps + 1,)
+    assert torch.all(sigmas[1:] < sigmas[:-1])
+
+
+@pytest.mark.parametrize("mode", ("uniform_refinement_tail", "trailing_refined"))
+def test_tail_modes_reject_explicit_invalid_count(mode):
+    with pytest.raises(ValueError, match="tail_steps"):
+        h3_uniform_flow_sigmas(SyntheticModelSamplingAV(), 5, 1.0, mode, tail_steps=5)
+
+
 @pytest.mark.parametrize("mode", SCHEDULER_MODES[1:])
 def test_denoise_is_exact_full_schedule_tail(mode):
     sampling = SyntheticModelSamplingAV()
