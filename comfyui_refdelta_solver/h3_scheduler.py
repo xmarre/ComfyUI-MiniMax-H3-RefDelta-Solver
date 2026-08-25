@@ -215,10 +215,11 @@ def _trailing_refined_base(
 ) -> torch.Tensor:
     if tail_steps == 0:
         return _uniform_base(steps)
-    # Diffusers-style trailing starts at the last discrete training index rather
-    # than the mathematical u=1 endpoint.  Derive that top from the actual model
-    # table, then explicitly resolve [tail_start, 0] instead of appending one
-    # large shifted-sigma jump.
+    # Diffusers-style trailing uses the final zero-based training-index
+    # normalization (N - 1) / N rather than the mathematical u=1 endpoint.
+    # The model table supplies N only; its actual final entry maps to u=1 for
+    # current ModelSamplingDiscreteFlow.  Explicitly resolve [tail_start, 0]
+    # instead of appending one large shifted-sigma jump.
     top = (table_points - 1) / table_points
     return _joined_tail_base(steps, tail_steps, tail_start, tail_power, top=top)
 

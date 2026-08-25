@@ -120,7 +120,12 @@ def main() -> None:
     parser.add_argument("--audio-shift", type=float, default=3.0)
     parser.add_argument("--phase", type=float, default=0.5)
     parser.add_argument("--power", type=float, default=1.0)
-    parser.add_argument("--tail-steps", type=int, default=5)
+    parser.add_argument(
+        "--tail-steps",
+        type=int,
+        default=None,
+        help="Tail intervals; omit for automatic min(5, effective_steps - 1), or use 0 for uniform.",
+    )
     parser.add_argument("--tail-start", type=float, default=0.15)
     parser.add_argument("--tail-power", type=float, default=2.0)
     parser.add_argument("--beta-alpha", type=float, default=0.6)

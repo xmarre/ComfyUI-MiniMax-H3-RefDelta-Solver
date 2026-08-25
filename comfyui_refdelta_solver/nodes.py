@@ -414,6 +414,7 @@ class MiniMaxH3UniformFlowScheduler:
                 "detail_power": ("FLOAT", {"default": 1.0, "min": 0.25, "max": 4.0, "step": 0.05, "advanced": True}),
                 "profile": (cls.PROFILES, {"default": "h3_uniform_neutral", "advanced": True}),
                 "profile_path": ("STRING", {"default": "", "advanced": True}),
+                "auto_tail_steps": ("BOOLEAN", {"default": True, "advanced": True}),
             }
         }
 
@@ -446,6 +447,7 @@ class MiniMaxH3UniformFlowScheduler:
         detail_power,
         profile,
         profile_path,
+        auto_tail_steps,
     ):
         model_sampling = model.get_model_object("model_sampling")
         calibration = (
@@ -460,7 +462,7 @@ class MiniMaxH3UniformFlowScheduler:
             mode,
             phase=phase,
             power=power,
-            tail_steps=tail_steps,
+            tail_steps=None if auto_tail_steps else tail_steps,
             tail_start=tail_start,
             tail_power=tail_power,
             beta_alpha=beta_alpha,

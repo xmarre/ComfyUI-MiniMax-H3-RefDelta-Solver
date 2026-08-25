@@ -202,8 +202,9 @@ def build_profile(
     """Build a research scheduler profile from production telemetry only.
 
     Same-state FL2VA/Ref2VA comparison fields are deliberately stripped before
-    binning. They remain diagnostic data and are not embedded in scheduler
-    profiles or treated as a scheduler oracle.
+    binning. Experimental shared-flow density additionally accepts only rows
+    explicitly marked as actual model evaluations. Diagnostic and forecast data
+    are not embedded in scheduler profiles or treated as a scheduler oracle.
     """
     if shared_flow_density and (
         shared_flow_video_shift is None
@@ -211,9 +212,21 @@ def build_profile(
         or shared_flow_video_shift <= 0.0
     ):
         raise ValueError("shared-flow density requires a positive finite source video shift")
-    production_records = deduplicate_production_records(records)
+    unique_production_records = deduplicate_production_records(records)
+    density_records = unique_production_records
+    if shared_flow_density and experimental_stability_density:
+        density_records = [
+            record
+            for record in unique_production_records
+            if record.get("actual_model_evaluation") is True
+        ]
+        if not density_records:
+            raise ValueError(
+                "experimental shared-flow density requires telemetry rows explicitly marked "
+                "actual_model_evaluation=true"
+            )
     points = bin_stability_records(
-        production_records,
+        density_records,
         bins,
         video_shift=shared_flow_video_shift if shared_flow_density else None,
     )
@@ -244,8 +257,8 @@ def build_profile(
     metadata = {
         "input_files": input_files or [],
         "input_records": len(records),
-        "unique_production_records": len(production_records),
-        "replayed_production_duplicates_removed": len(records) - len(production_records),
+        "unique_production_records": len(unique_production_records),
+        "replayed_production_duplicates_removed": len(records) - len(unique_production_records),
         "populated_bins": len(points),
         "density_source": (
             "production_trajectory_stability_research"
@@ -276,6 +289,11 @@ def build_profile(
             else "neutral_control"
         )
         metadata["source_video_shift"] = shared_flow_video_shift
+        if experimental_stability_density:
+            metadata["actual_model_evaluation_records_used"] = len(density_records)
+            metadata["non_explicit_actual_records_excluded"] = (
+                len(unique_production_records) - len(density_records)
+            )
 
     return {
         "version": 2 if shared_flow_density else 1,

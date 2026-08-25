@@ -14,6 +14,7 @@ from comfyui_refdelta_solver.h3_scheduler import (
     load_flow_profile,
     shifted_sigma_to_base,
 )
+from comfyui_refdelta_solver.nodes import MiniMaxH3UniformFlowScheduler
 
 
 class SyntheticModelSamplingAV:
@@ -68,6 +69,27 @@ def test_tail_mode_default_resolves_for_short_schedules(mode, steps):
 def test_tail_modes_reject_explicit_invalid_count(mode):
     with pytest.raises(ValueError, match="tail_steps"):
         h3_uniform_flow_sigmas(SyntheticModelSamplingAV(), 5, 1.0, mode, tail_steps=5)
+
+
+@pytest.mark.parametrize("mode", ("uniform_refinement_tail", "trailing_refined"))
+@pytest.mark.parametrize("steps", (1, 2, 3, 4, 5))
+def test_node_untouched_tail_defaults_are_valid_for_short_schedules(mode, steps):
+    required = MiniMaxH3UniformFlowScheduler.INPUT_TYPES()["required"]
+    inputs = {
+        name: spec[1]["default"]
+        for name, spec in required.items()
+        if name != "model"
+    }
+    assert inputs["auto_tail_steps"] is True
+    assert inputs["tail_steps"] == 5
+    inputs.update(mode=mode, steps=steps)
+    sampling = SyntheticModelSamplingAV()
+    model = SimpleNamespace(get_model_object=lambda name: sampling)
+
+    sigmas = MiniMaxH3UniformFlowScheduler().get_sigmas(model=model, **inputs)[0]
+
+    assert sigmas.shape == (steps + 1,)
+    assert torch.all(sigmas[1:] < sigmas[:-1])
 
 
 @pytest.mark.parametrize("mode", SCHEDULER_MODES[1:])
@@ -160,12 +182,14 @@ def test_refinement_tail_is_dense_near_zero_and_has_no_duplicate_join():
     assert first_tail_interval <= body_join_interval * 1.1
 
 
-def test_trailing_refined_derives_discrete_top_from_model_table():
+def test_trailing_refined_uses_diffusers_last_training_index_normalization():
     sampling = SyntheticModelSamplingAV(timesteps=1000)
     sigmas = h3_uniform_flow_sigmas(
         sampling, 20, 1.0, "trailing_refined", tail_steps=5, tail_start=0.15
     )
     base = shifted_sigma_to_base(sigmas.to(torch.float64), sampling.shift)
+    actual_table_top = shifted_sigma_to_base(sampling.sigmas[-1].to(torch.float64), sampling.shift)
+    assert actual_table_top.item() == pytest.approx(1.0, abs=4e-7)
     assert base[0].item() == pytest.approx(0.999, abs=4e-7)
 
 

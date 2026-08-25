@@ -92,6 +92,7 @@ def test_shared_flow_profile_is_explicit_versioned_schema():
     records = _records()
     for record, base_time in zip(records, (1.0, 0.66, 0.33, 0.0)):
         record["sigma"] = 12.0 * base_time / (1.0 + 11.0 * base_time)
+        record["actual_model_evaluation"] = True
     profile = build_profile(
         records,
         profile_id="flow-test",
@@ -110,6 +111,8 @@ def test_shared_flow_profile_is_explicit_versioned_schema():
     assert profile["metadata"]["evidence_source"] == "production_actual_trajectory"
     assert profile["metadata"]["comparison_metrics_used_for_density"] is False
     assert profile["metadata"]["production_use"] is False
+    assert profile["metadata"]["actual_model_evaluation_records_used"] == 4
+    assert profile["metadata"]["non_explicit_actual_records_excluded"] == 0
     assert flow_profile_from_dict(profile).profile_id == "flow-test"
 
 
@@ -123,6 +126,69 @@ def test_shared_flow_profile_requires_source_shift_metadata():
             weights=WEIGHTS,
             shared_flow_density=True,
         )
+
+
+def test_experimental_shared_flow_profile_requires_explicit_actual_rows():
+    with pytest.raises(ValueError, match="actual_model_evaluation=true"):
+        build_profile(
+            _records(),
+            profile_id="flow-test",
+            bins=4,
+            experimental_stability_density=True,
+            weights=WEIGHTS,
+            shared_flow_density=True,
+            shared_flow_video_shift=12.0,
+        )
+
+
+def test_shared_flow_density_excludes_spectrum_forecast_rows():
+    def record(step, base_time, risk, actual):
+        return {
+            "step": step,
+            "sigma": 12.0 * base_time / (1.0 + 11.0 * base_time),
+            "sigma_min": 0.0,
+            "sigma_max": 1.0,
+            "actual_model_evaluation": actual,
+            "trajectory_risk": risk,
+            "risk_components_video_curvature": risk / 2.0,
+            "risk_components_video_extrapolation_error": risk / 3.0,
+        }
+
+    actual_records = [
+        record(0, 0.9, 0.2, True),
+        record(1, 0.7, 0.4, True),
+        record(3, 0.3, 0.6, True),
+        record(4, 0.1, 0.8, True),
+    ]
+    copied_forecast = record(2, 0.5, 1000.0, False)
+
+    def build(rows):
+        return build_profile(
+            rows,
+            profile_id="actual-only",
+            bins=8,
+            experimental_stability_density=True,
+            weights=WEIGHTS,
+            shared_flow_density=True,
+            shared_flow_video_shift=12.0,
+        )
+
+    baseline = build(actual_records)
+    with_forecast = build(actual_records[:2] + [copied_forecast] + actual_records[2:])
+    misclassified_as_actual = build(
+        actual_records[:2]
+        + [dict(copied_forecast, actual_model_evaluation=True)]
+        + actual_records[2:]
+    )
+
+    assert with_forecast["points"] == baseline["points"]
+    assert (
+        with_forecast["metadata"]["binned_production_stability"]
+        == baseline["metadata"]["binned_production_stability"]
+    )
+    assert misclassified_as_actual["points"] != baseline["points"]
+    assert with_forecast["metadata"]["actual_model_evaluation_records_used"] == 4
+    assert with_forecast["metadata"]["non_explicit_actual_records_excluded"] == 1
 
 
 def test_replay_copies_do_not_duplicate_production_stability_evidence():

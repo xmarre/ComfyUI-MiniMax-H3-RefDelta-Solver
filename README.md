@@ -266,7 +266,7 @@ Available modes:
 | `phase_offset_uniform` | Nonterminal `u_i = 1 - (i + phase) / steps`, then exact zero |
 | `power_uniform` | `u(x)=(1-x)^power`; `power=1` is exactly `uniform_linspace` |
 | `uniform_refinement_tail` | Uniform body from `u=1` to explicit `tail_start`, then a power-refined tail using `tail_steps` |
-| `trailing_refined` | Starts at the model table's last discrete base-time index, joins at `tail_start`, and explicitly refines to zero |
+| `trailing_refined` | Uses Diffusers-style final training-index normalization `(N-1)/N`, joins at `tail_start`, and explicitly refines to zero |
 | `asymmetric_beta` | Continuous beta quantiles in shared base time; this is deliberately distinct from stock rounded-table `beta` |
 | `av_arc_length` | Blends uniform placement with equal joint video/audio shifted-flow arc length |
 | `piecewise_structure_refinement` | Continuous two-segment progress warp with independent structure/detail powers |
@@ -275,11 +275,14 @@ Available modes:
 Controls are marked advanced where appropriate and affect only their named modes. In
 particular, `phase`, `power`, tail controls, beta parameters, arc controls, piecewise
 controls, `profile`, and `profile_path` are inert outside their respective mode.
+`auto_tail_steps=true` selects `min(5, effective_steps - 1)` after denoise expansion;
+disable it to use the explicit `tail_steps` value. An explicit `tail_steps=0` remains the
+exact uniform-baseline identity.
 
-For all continuous modes the raw schedule deliberately includes `u=1`. Current ER-SDE
-applies ComfyUI's `offset_first_sigma_for_snr` safety adjustment to that first point for a
-`CONST` flow model; subsequent points are unchanged. `legacy_ddim_uniform` starts below
-one and retains its upstream behavior.
+Continuous modes whose definition starts at `u=1` deliberately retain that endpoint.
+Current ER-SDE applies ComfyUI's `offset_first_sigma_for_snr` safety adjustment to such a
+first point for a `CONST` flow model; subsequent points are unchanged. Phase-offset,
+positive-tail `trailing_refined`, and `legacy_ddim_uniform` intentionally start below one.
 
 `denoise < 1` follows `BasicScheduler` semantics: the node constructs the corresponding
 longer schedule and returns its exact tail. Outputs are deterministic CPU float32 tensors,
@@ -309,9 +312,12 @@ python tools/build_profile.py \
 ```
 
 The builder removes `comparison_*` and `ref_delta_*` fields before binning and marks the
-result as non-production. `--video-shift` must match the source telemetry run; it is stored
-in the profile and used to invert video sigma back to shared base time. Existing version-1
-beta-prior profiles and the legacy scheduler retain their original semantics.
+result as non-production. Experimental v2 density accepts only rows explicitly marked
+`actual_model_evaluation=true`; missing or forecast-only telemetry fails closed rather than
+redistributing cached Spectrum observations into forecast sigma bins. `--video-shift` must
+match the source telemetry run; it is stored in the profile and used to invert video sigma
+back to shared base time. Existing version-1 beta-prior profiles and the legacy scheduler
+retain their original semantics.
 
 Curve shape, intermediate sharpness, theoretical elegance, and FL2VA/Ref2VA similarity do
 not establish media quality. A/B evaluation should compare coherent action, scene/action
