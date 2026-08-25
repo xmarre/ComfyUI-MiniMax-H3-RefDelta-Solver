@@ -113,12 +113,12 @@ class RefDeltaSamplerConfig:
 
 
 # Production tuning is intentionally separate from the dataclass defaults. The
-# defaults above preserve saved-workflow behavior; this named preset is the
+# defaults above preserve saved-workflow behavior; this named default set is the
 # empirically tuned rank-1024 INT8 ConvRot path exposed by the recommended node.
 PRODUCTION_STABILITY_DEFAULTS: dict[str, object] = {
     "adaptive_order": True,
     "risk_sensitivity": 1.0,
-    "stochastic_adaptation_strength": 0.60,
+    "stochastic_adaptation_strength": 0.50,
     "minimum_stochastic_multiplier": 0.50,
     "trajectory_correction": True,
     "video_correction_strength": 0.15,
@@ -138,9 +138,9 @@ PRODUCTION_STABILITY_DEFAULTS: dict[str, object] = {
     "video_stability_motion_high": 0.60,
     "video_stability_diffusion_low": 0.05,
     "video_stability_diffusion_high": 0.50,
-    "video_stability_diffusion_weight": 0.25,
+    "video_stability_diffusion_weight": 0.20,
     "video_stability_normalization_floor": 0.10,
-    "video_stability_gamma": 0.75,
+    "video_stability_gamma": 1.0,
     "video_stability_spatial_radius": 2,
     "video_stability_temporal_radius": 2,
     "video_stability_ema": 0.70,
@@ -152,7 +152,7 @@ PRODUCTION_STABILITY_DEFAULTS: dict[str, object] = {
 
 
 def production_stability_config(**overrides) -> RefDeltaSamplerConfig:
-    """Build the named production stability preset with explicit overrides."""
+    """Build the recommended production stability defaults with explicit overrides."""
     values = dict(PRODUCTION_STABILITY_DEFAULTS)
     values.update(overrides)
     config = RefDeltaSamplerConfig(**values)
