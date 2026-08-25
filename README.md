@@ -37,19 +37,19 @@ The custom node has no runtime dependencies beyond current ComfyUI.
 
 ### MiniMax H3 RefDelta Stability Sampler
 
-This is the recommended production node. It uses the named
-`r1024_int8_convrot_stability_v1` preset while keeping every production-relevant knob
-editable in the node. Diagnostic capture controls and legacy controller-mode selection are
-kept out of this node so ordinary workflows do not mix production tuning with research
-capture state.
+This is the recommended production node. Its production defaults are built directly into
+the node while every production-relevant knob remains editable. There is no separate
+sampler profile or calibration file to select. Diagnostic capture controls and legacy
+controller-mode selection are kept out of this node so ordinary workflows do not mix
+production tuning with research capture state.
 
-Current empirically tuned defaults:
+Current empirically validated defaults:
 
 ```text
 adaptive_order = true
 risk_sensitivity = 1.00
 
-stochastic_adaptation_strength = 0.60
+stochastic_adaptation_strength = 0.50
 minimum_stochastic_multiplier = 0.50
 
 trajectory_correction = true
@@ -70,9 +70,9 @@ video_stability_motion_low = 0.15
 video_stability_motion_high = 0.60
 video_stability_diffusion_low = 0.05
 video_stability_diffusion_high = 0.50
-video_stability_diffusion_weight = 0.25
+video_stability_diffusion_weight = 0.20
 video_stability_normalization_floor = 0.10
-video_stability_gamma = 0.75
+video_stability_gamma = 1.00
 
 video_stability_spatial_radius = 2
 video_stability_temporal_radius = 2
@@ -82,9 +82,14 @@ video_stability_full_fraction = 0.30
 stochastic_gate_slew_limit = 0.00
 ```
 
-These values are a production candidate for the rank-1024 INT8 ConvRot checkpoint, not a
-claim that one setting is universally optimal for every prompt/reference stack. The node
-keeps the knobs exposed specifically so tuning does not require code changes.
+These values are the current production candidate for the rank-1024 INT8 ConvRot checkpoint,
+not a claim that one setting is universally optimal for every prompt/reference stack. The
+node keeps the knobs exposed specifically so tuning does not require code changes.
+
+Same-seed validation of the streamlined Stability Sampler against the advanced node produced
+cell-for-cell identical CSV telemetry and byte-for-byte identical JSONL telemetry when both
+were configured with these values. The streamlined node therefore changes workflow UX, not
+the sampler/controller path.
 
 #### What the stability controller does
 
@@ -151,7 +156,7 @@ It additionally exposes:
 - `calibration_capture` / `calibration_id` for disk-backed diagnostic capture;
 - the same detailed stability controls as the production node.
 
-The legacy defaults are **not** the current recommended rank-1024 production preset; they
+The legacy defaults are **not** the current recommended rank-1024 production defaults; they
 exist so older saved workflows do not silently change behavior after upgrading.
 
 For a strict stock ER-SDE baseline:
