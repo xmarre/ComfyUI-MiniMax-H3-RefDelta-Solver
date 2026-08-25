@@ -31,7 +31,7 @@ def test_native_equivalence_mode_requires_every_adaptive_path_off():
     assert spatial_values.is_native_equivalence_mode
 
 
-def test_production_stability_preset_is_named_tuned_and_separate_from_legacy_defaults():
+def test_production_stability_defaults_are_named_tuned_and_separate_from_legacy_defaults():
     assert PRODUCTION_STABILITY_PRESET_ID == "r1024_int8_convrot_stability_v1"
     config = production_stability_config()
     config.validate()
@@ -41,7 +41,7 @@ def test_production_stability_preset_is_named_tuned_and_separate_from_legacy_def
     assert RefDeltaSamplerConfig().minimum_stochastic_multiplier == pytest.approx(0.25)
 
     assert config.stochastic_control_mode == "spatiotemporal_stability"
-    assert config.stochastic_adaptation_strength == pytest.approx(0.60)
+    assert config.stochastic_adaptation_strength == pytest.approx(0.50)
     assert config.minimum_stochastic_multiplier == pytest.approx(0.50)
     assert config.static_video_stochastic_adaptation_strength == pytest.approx(0.25)
     assert config.trajectory_correction is True
@@ -49,13 +49,13 @@ def test_production_stability_preset_is_named_tuned_and_separate_from_legacy_def
     assert config.video_stability_motion_high == pytest.approx(0.60)
     assert config.video_stability_diffusion_low == pytest.approx(0.05)
     assert config.video_stability_diffusion_high == pytest.approx(0.50)
-    assert config.video_stability_diffusion_weight == pytest.approx(0.25)
-    assert config.video_stability_gamma == pytest.approx(0.75)
+    assert config.video_stability_diffusion_weight == pytest.approx(0.20)
+    assert config.video_stability_gamma == pytest.approx(1.00)
     assert config.calibration_capture is False
     assert PRODUCTION_STABILITY_DEFAULTS["debug_stability_maps"] is False
 
 
-def test_production_stability_preset_accepts_explicit_tuning_overrides():
+def test_production_stability_defaults_accept_explicit_tuning_overrides():
     config = production_stability_config(
         stochastic_adaptation_strength=0.55,
         static_video_stochastic_adaptation_strength=0.30,
