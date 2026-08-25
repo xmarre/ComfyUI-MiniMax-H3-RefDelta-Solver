@@ -35,7 +35,7 @@ def _records():
     ]
 
 
-def test_default_profile_is_neutral_and_reports_comparisons_without_using_them():
+def test_default_profile_is_neutral_compatibility_and_strips_comparison_data():
     profile = build_profile(
         _records(),
         profile_id="test",
@@ -43,13 +43,15 @@ def test_default_profile_is_neutral_and_reports_comparisons_without_using_them()
         experimental_stability_density=False,
         weights=WEIGHTS,
     )
-    assert profile["status"] == "provisional-neutral"
+    assert profile["status"] == "neutral-compatibility"
     assert [point["difficulty"] for point in profile["points"]] == [1.0, 1.0]
     metadata = profile["metadata"]
     assert metadata["comparison_metrics_used_for_density"] is False
-    assert metadata["comparison_diagnostics"][
-        "comparison_ref2va_video_x0_relative_error"
-    ] == pytest.approx(500.0)
+    assert metadata["comparison_fields_embedded"] is False
+    assert metadata["production_scheduler"] == "comfyui_basic_scheduler_beta"
+    assert metadata["production_use"] is False
+    assert not any(key.startswith("comparison_") for key in metadata)
+    assert not any(key.startswith("ref_delta_") for key in metadata)
 
 
 def test_explicit_experimental_density_uses_only_production_stability():
@@ -74,6 +76,7 @@ def test_explicit_experimental_density_uses_only_production_stability():
     assert original["status"] == "trajectory-stability-experimental"
     assert original["points"] == altered["points"]
     assert len({point["difficulty"] for point in original["points"]}) > 1
+    assert original["metadata"]["production_use"] is False
 
 
 def test_replay_copies_do_not_duplicate_production_stability_evidence():
@@ -110,9 +113,7 @@ def test_replay_copies_do_not_duplicate_production_stability_evidence():
         sum(point["samples"] for point in metadata["binned_production_stability"])
         == 4
     )
-    assert metadata["comparison_diagnostics"][
-        "comparison_fl2va_video_x0_cosine"
-    ] == pytest.approx(0.9)
+    assert metadata["comparison_fields_embedded"] is False
 
 
 def test_read_records_normalizes_csv_booleans(tmp_path):
