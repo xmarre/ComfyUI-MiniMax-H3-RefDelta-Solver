@@ -1,14 +1,18 @@
-# Unreleased
+# MiniMax H3 RefDelta Solver v0.4.0
 
-## Experimental H3 uniform-flow scheduler laboratory
+## Experimental H3 uniform-flow scheduler
 
-- Added the separate stable node ID `MiniMaxH3UniformFlowScheduler`, displayed as `MiniMax H3 Uniform Flow Scheduler [Experimental]`; all existing node IDs and v0.3.0 behavior remain unchanged.
-- Added exact ComfyUI `ddim_uniform` / `BasicScheduler` parity as the default experimental control, preserving integer table stride, phase placement, extra-point behavior, and denoise tail slicing.
+- Added the separate stable node ID `MiniMaxH3UniformFlowScheduler`, displayed as `MiniMax H3 Uniform Flow Scheduler [Experimental]`; existing sampler and legacy scheduler node IDs remain unchanged.
+- Promoted the completed real-media A/B winner to the experimental node defaults: **19 steps + `phase_offset_uniform` + `phase=0.50`**. This changes only the new experimental scheduler node.
+- The 19-step phase sweep found `0.60` and `0.65` prone to visible flashing, `0.55` stable but weaker in action than `0.50`, and `0.45` worse. `0.50` gave the best observed balance of action, visual stability, shot variety, and audio behavior in the tested MiniMax-H3 + ER-SDE workflow.
+- Preserved exact ComfyUI `ddim_uniform` / `BasicScheduler` parity as `legacy_ddim_uniform`, including integer table stride, phase placement, extra-point behavior, and denoise tail slicing.
 - Added shared-base-time linspace, phase-offset, power, uniform refinement-tail, H3-aware trailing-refined, asymmetric beta, audiovisual arc-length, continuous piecewise structure/refinement, and safe offline curvature-profile modes.
-- Added an explicit version-2 shared-base-time density schema and neutral control profile. Experimental v2 density fails closed unless telemetry contains explicitly actual model-evaluation rows and excludes Spectrum forecast rows before binning. The builder emits v2 only with `--shared-flow-density`; version-1 beta-prior profile semantics remain unchanged.
-- Preserved one H3 audiovisual clock by mapping shared base time through the loaded model's video sampling API and leaving audio mapping to `ModelSamplingAV`/MiniMax-H3. Runtime video/audio shifts are validated and used by H3-specific modes.
-- Added deterministic schedule inspection/export tooling plus regression coverage for exact pinned-ComfyUI parity, identities, denoise tails, non-default shifts, continuity, numerical boundaries, immutability, packaging, and node registration.
-- Production guidance remains **MiniMax H3 RefDelta Stability Sampler + ComfyUI BasicScheduler beta**. Scheduler-curve behavior is experimental pending held-out final-media validation.
+- Real-media testing also found the refinement-tail family visually strong but less stable/inventive, `av_arc_length` promising but with an artifacted shot in the tested pass, and default `asymmetric_beta(0.6, 0.6)` unstable with rapid shot repetition and doubled audio. Neutral power/piecewise controls correctly matched uniform linspace.
+- Added an explicit version-2 shared-base-time density schema and neutral control profile. Experimental v2 density fails closed unless telemetry contains explicitly actual model-evaluation rows and excludes Spectrum forecast rows before binning.
+- Preserved one H3 audiovisual clock by mapping shared base time through the loaded model's video sampling API and leaving audio mapping to `ModelSamplingAV`/MiniMax-H3. Runtime video/audio shifts are validated; runtime scheduling does not hardcode the usual 12/3 shifts.
+- Fixed packaged `curvature_profile` loading under ComfyUI's compatibility `importlib.resources` implementation by using one-child `Traversable.joinpath()` calls; added a regression that reproduces `CompatibilityFiles.SpecPath`.
+- Added deterministic schedule inspection/export tooling plus regression coverage for pinned-ComfyUI parity, reduction identities, denoise tails, short-step defaults, non-default shifts, profile provenance, Spectrum forecast exclusion, numerical boundaries, immutability, packaging, and node registration.
+- The conservative production fallback remains **MiniMax H3 RefDelta Stability Sampler + ComfyUI `BasicScheduler(beta)`** while the new phase-offset preset continues broader prompt/seed validation.
 
 # MiniMax H3 RefDelta Solver v0.3.0
 
