@@ -236,21 +236,47 @@ or scheduler density automatically.
 
 ### MiniMax H3 Uniform Flow Scheduler [Experimental]
 
-This separate scheduler node is a controlled laboratory for the strongest scheduler lead
-seen in real MiniMax-H3 testing so far: ComfyUI `ddim_uniform` produced many quick cuts,
-coherent action, and unusually high scene/action variety. `linear_quadratic` was also tested
-and did not show special behavior. The quick-cut/high-variety character is intentionally
-preserved as an experimental target.
+This separate scheduler node grew out of the strongest scheduler lead seen in real
+MiniMax-H3 testing: ComfyUI `ddim_uniform` produced many quick cuts, coherent action,
+and unusually high scene/action variety. The released laboratory keeps that exact control
+but now defaults to the best setting from the completed 19-step MiniMax-H3 + ER-SDE
+media A/B pass:
+
+```text
+steps = 19
+mode = phase_offset_uniform
+phase = 0.50
+denoise = 1.00
+```
+
+The phase sweep was materially informative. `0.60` and `0.65` reintroduced visible
+flashing; `0.55` removed the flashing but produced weaker action than `0.50`; `0.45`
+was worse again. `0.50` gave the best observed balance of coherent action, stable
+visuals, useful shot variety, and audio behavior in the tested workflow. Small phase
+changes also altered spoken intonation, confirming that placement changes the shared AV
+trajectory rather than acting as a video-only quality knob.
+
+Other scheduler families remain available as research controls. The real-media pass found
+`uniform_linspace` solid; neutral `power_uniform` and neutral
+`piecewise_structure_refinement` matched it as expected. `uniform_refinement_tail`
+and `trailing_refined` could produce very good results, but the refinement-tail family
+was more inventive/unstable across repeated tests. `av_arc_length` produced strong,
+varied shots but also an artifacted shot in the tested pass. Default
+`asymmetric_beta(0.6, 0.6)` was unstable, with rapid shot repetition and doubled audio.
+These observations are empirical results from the tested H3 workflow, not universal
+rankings for every prompt, checkpoint, or step count.
 
 Connect the node's `SIGMAS` output to the same custom sampling path and continue using
 **ER-SDE**. “DDIM” here describes time-point spacing; this node does not use a DDIM sampler
-or replace ER-SDE. The production recommendation remains `BasicScheduler` + `beta` until
-held-out generated media supports a change.
+or replace ER-SDE. The current experimental recommendation is the default
+`phase_offset_uniform / 0.50 / 19 steps` preset. The conservative production fallback
+remains the RefDelta Stability Sampler with stock `BasicScheduler(beta)` until broader
+cross-prompt and cross-seed validation justifies changing the global recommendation.
 
-The default `legacy_ddim_uniform` mode delegates to ComfyUI's own scheduler and reproduces
-the full `BasicScheduler` behavior, including table index 1, integer floor stride, reversal,
-occasional extra point, and final tail slice. This unusual placement is the known-good
-experimental control. Exact parity is tested against the pinned ComfyUI revisions in CI.
+`legacy_ddim_uniform` delegates to ComfyUI's own scheduler and reproduces the full
+`BasicScheduler` behavior, including table index 1, integer floor stride, reversal,
+occasional extra point, and final tail slice. This unusual placement remains the exact
+high-variety control. Exact parity is tested against the pinned ComfyUI revisions in CI.
 
 All other modes choose one descending trajectory on H3's shared base flow coordinate `u`
 and map it through the loaded model's video shift. H3's `ModelSamplingAV` and model code
@@ -263,11 +289,11 @@ Available modes:
 | --- | --- |
 | `legacy_ddim_uniform` | Exact current ComfyUI control, including integer table-stride aliasing |
 | `uniform_linspace` | Inclusive `u=1..0` linspace with `steps+1` points |
-| `phase_offset_uniform` | Nonterminal `u_i = 1 - (i + phase) / steps`, then exact zero |
+| `phase_offset_uniform` | Nonterminal `u_i = 1 - (i + phase) / steps`, then exact zero; released default is `phase=0.50` |
 | `power_uniform` | `u(x)=(1-x)^power`; `power=1` is exactly `uniform_linspace` |
 | `uniform_refinement_tail` | Uniform body from `u=1` to explicit `tail_start`, then a power-refined tail using `tail_steps` |
 | `trailing_refined` | Uses Diffusers-style final training-index normalization `(N-1)/N`, joins at `tail_start`, and explicitly refines to zero |
-| `asymmetric_beta` | Continuous beta quantiles in shared base time; this is deliberately distinct from stock rounded-table `beta` |
+| `asymmetric_beta` | Continuous beta quantiles in shared base time; deliberately distinct from stock rounded-table `beta` |
 | `av_arc_length` | Blends uniform placement with equal joint video/audio shifted-flow arc length |
 | `piecewise_structure_refinement` | Continuous two-segment progress warp with independent structure/detail powers |
 | `curvature_profile` | Immutable offline production-telemetry density; bundled `h3_uniform_neutral` is neutral |
@@ -293,7 +319,7 @@ explicitly.
 Schedule curves and implied audio times can be exported without running the model:
 
 ```bash
-python tools/inspect_h3_schedule.py --mode uniform_refinement_tail --steps 20 --format csv
+python tools/inspect_h3_schedule.py --mode phase_offset_uniform --steps 19 --phase 0.50 --format csv
 ```
 
 The curvature mode uses a version-2 `shared-base-time-progress-density` schema so legacy
@@ -319,10 +345,10 @@ match the source telemetry run; it is stored in the profile and used to invert v
 back to shared base time. Existing version-1 beta-prior profiles and the legacy scheduler
 retain their original semantics.
 
-Curve shape, intermediate sharpness, theoretical elegance, and FL2VA/Ref2VA similarity do
-not establish media quality. A/B evaluation should compare coherent action, scene/action
-variety, quick-cut behavior, reference adherence, temporal stability, fine detail, audio,
-and endpoint quality on final generated media.
+The released default reflects real final-media A/B testing, but scheduler quality remains
+prompt-, seed-, checkpoint-, and step-count-dependent. Keep `legacy_ddim_uniform`,
+`uniform_linspace`, and stock `beta` available as controls when validating another
+workflow.
 
 ### [Legacy/Research] MiniMax H3 RefDelta Scheduler
 
