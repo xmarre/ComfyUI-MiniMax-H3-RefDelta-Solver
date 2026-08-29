@@ -14,6 +14,7 @@ from .config import (
     production_stability_config,
 )
 from .diagnostics import RefDeltaReferenceGuiderMixin
+from .h3_scheduler import SCHEDULER_MODES, h3_uniform_flow_sigmas, load_flow_profile
 from .sampler import sample_refdelta_er_sde
 from .scheduler import load_profile, sigmas_from_profile
 
@@ -386,6 +387,97 @@ class MiniMaxH3RefDeltaScheduler:
         return (sigmas_from_profile(model_sampling, steps, denoise, calibration),)
 
 
+class MiniMaxH3UniformFlowScheduler:
+    """Experimental shared-base-time scheduler laboratory for MiniMax H3."""
+
+    PROFILES: ClassVar[list[str]] = ["h3_uniform_neutral"]
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "steps": ("INT", {"default": 19, "min": 1, "max": 10000}),
+                "denoise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "mode": (list(SCHEDULER_MODES), {"default": "phase_offset_uniform"}),
+                "phase": ("FLOAT", {"default": 0.50, "min": 0.0, "max": 0.99, "step": 0.01, "advanced": True}),
+                "power": ("FLOAT", {"default": 1.0, "min": 0.25, "max": 4.0, "step": 0.05, "advanced": True}),
+                "tail_steps": ("INT", {"default": 5, "min": 0, "max": 100, "step": 1, "advanced": True}),
+                "tail_start": ("FLOAT", {"default": 0.15, "min": 0.001, "max": 0.999, "step": 0.005, "advanced": True}),
+                "tail_power": ("FLOAT", {"default": 2.0, "min": 0.25, "max": 4.0, "step": 0.05, "advanced": True}),
+                "beta_alpha": ("FLOAT", {"default": 0.60, "min": 0.05, "max": 5.0, "step": 0.05, "advanced": True}),
+                "beta_beta": ("FLOAT", {"default": 0.60, "min": 0.05, "max": 5.0, "step": 0.05, "advanced": True}),
+                "arc_strength": ("FLOAT", {"default": 0.50, "min": 0.0, "max": 1.0, "step": 0.05, "advanced": True}),
+                "audio_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.05, "advanced": True}),
+                "structure_fraction": ("FLOAT", {"default": 0.50, "min": 0.05, "max": 0.95, "step": 0.05, "advanced": True}),
+                "mid_power": ("FLOAT", {"default": 1.0, "min": 0.25, "max": 4.0, "step": 0.05, "advanced": True}),
+                "detail_power": ("FLOAT", {"default": 1.0, "min": 0.25, "max": 4.0, "step": 0.05, "advanced": True}),
+                "profile": (cls.PROFILES, {"default": "h3_uniform_neutral", "advanced": True}),
+                "profile_path": ("STRING", {"default": "", "advanced": True}),
+                "auto_tail_steps": ("BOOLEAN", {"default": True, "advanced": True}),
+            }
+        }
+
+    RETURN_TYPES = ("SIGMAS",)
+    RETURN_NAMES = ("sigmas",)
+    FUNCTION = "get_sigmas"
+    CATEGORY = "sampling/custom_sampling/schedulers"
+    DESCRIPTION = (
+        "Experimental MiniMax-H3 shared-flow scheduler family for ER-SDE A/B research. "
+        "The media-tested default is phase_offset_uniform at phase 0.50 / 19 steps; "
+        "legacy_ddim_uniform remains the exact ComfyUI parity control."
+    )
+
+    def get_sigmas(
+        self,
+        model,
+        steps,
+        denoise,
+        mode,
+        phase,
+        power,
+        tail_steps,
+        tail_start,
+        tail_power,
+        beta_alpha,
+        beta_beta,
+        arc_strength,
+        audio_weight,
+        structure_fraction,
+        mid_power,
+        detail_power,
+        profile,
+        profile_path,
+        auto_tail_steps,
+    ):
+        model_sampling = model.get_model_object("model_sampling")
+        calibration = (
+            load_flow_profile(profile, profile_path or None)
+            if mode == "curvature_profile"
+            else None
+        )
+        sigmas = h3_uniform_flow_sigmas(
+            model_sampling,
+            steps,
+            denoise,
+            mode,
+            phase=phase,
+            power=power,
+            tail_steps=None if auto_tail_steps else tail_steps,
+            tail_start=tail_start,
+            tail_power=tail_power,
+            beta_alpha=beta_alpha,
+            beta_beta=beta_beta,
+            arc_strength=arc_strength,
+            audio_weight=audio_weight,
+            structure_fraction=structure_fraction,
+            mid_power=mid_power,
+            detail_power=detail_power,
+            profile=calibration,
+        )
+        return (sigmas,)
+
+
 class MiniMaxH3RefDeltaReferenceGuider:
     """Deprecated simultaneous dual-model diagnostic retained for saved workflows."""
 
@@ -434,6 +526,7 @@ NODE_CLASS_MAPPINGS = {
     "MiniMaxH3RefDeltaComparisonReplaySampler": MiniMaxH3RefDeltaComparisonReplaySampler,
     "MiniMaxH3RefDeltaReferenceReplaySampler": MiniMaxH3RefDeltaReferenceReplaySampler,
     "MiniMaxH3RefDeltaScheduler": MiniMaxH3RefDeltaScheduler,
+    "MiniMaxH3UniformFlowScheduler": MiniMaxH3UniformFlowScheduler,
     "MiniMaxH3RefDeltaReferenceGuider": MiniMaxH3RefDeltaReferenceGuider,
 }
 
@@ -443,5 +536,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3RefDeltaComparisonReplaySampler": "MiniMax H3 RefDelta Comparison Replay",
     "MiniMaxH3RefDeltaReferenceReplaySampler": "[Legacy] MiniMax H3 RefDelta Reference Replay",
     "MiniMaxH3RefDeltaScheduler": "[Legacy/Research] MiniMax H3 RefDelta Scheduler",
+    "MiniMaxH3UniformFlowScheduler": "MiniMax H3 Uniform Flow Scheduler [Experimental]",
     "MiniMaxH3RefDeltaReferenceGuider": "[Legacy] MiniMax H3 RefDelta Reference Guider",
 }

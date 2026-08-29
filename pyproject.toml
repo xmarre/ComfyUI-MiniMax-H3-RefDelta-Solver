@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "comfyui-minimax-h3-refdelta-solver"
 description = "A RefDelta-aware ER-SDE sampler, spatiotemporal stability controller, and diagnostics for MiniMax-H3 fused checkpoints."
-version = "0.3.0"
+version = "0.4.0"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
