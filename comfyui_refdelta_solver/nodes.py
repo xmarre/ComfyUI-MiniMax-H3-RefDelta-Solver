@@ -397,9 +397,9 @@ class MiniMaxH3UniformFlowScheduler:
         return {
             "required": {
                 "model": ("MODEL",),
-                "steps": ("INT", {"default": 20, "min": 1, "max": 10000}),
+                "steps": ("INT", {"default": 19, "min": 1, "max": 10000}),
                 "denoise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "mode": (list(SCHEDULER_MODES), {"default": "legacy_ddim_uniform"}),
+                "mode": (list(SCHEDULER_MODES), {"default": "phase_offset_uniform"}),
                 "phase": ("FLOAT", {"default": 0.50, "min": 0.0, "max": 0.99, "step": 0.01, "advanced": True}),
                 "power": ("FLOAT", {"default": 1.0, "min": 0.25, "max": 4.0, "step": 0.05, "advanced": True}),
                 "tail_steps": ("INT", {"default": 5, "min": 0, "max": 100, "step": 1, "advanced": True}),
@@ -424,7 +424,8 @@ class MiniMaxH3UniformFlowScheduler:
     CATEGORY = "sampling/custom_sampling/schedulers"
     DESCRIPTION = (
         "Experimental MiniMax-H3 shared-flow scheduler family for ER-SDE A/B research. "
-        "legacy_ddim_uniform delegates to ComfyUI for exact BasicScheduler parity."
+        "The media-tested default is phase_offset_uniform at phase 0.50 / 19 steps; "
+        "legacy_ddim_uniform remains the exact ComfyUI parity control."
     )
 
     def get_sigmas(
