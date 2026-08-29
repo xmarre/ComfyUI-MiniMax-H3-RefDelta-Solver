@@ -43,6 +43,9 @@ legacy_scheduler = module.NODE_CLASS_MAPPINGS["MiniMaxH3RefDeltaScheduler"]
 uniform_scheduler = module.NODE_CLASS_MAPPINGS["MiniMaxH3UniformFlowScheduler"]
 assert legacy_scheduler.INPUT_TYPES()["required"]["profile"][0] == ["r1024_provisional"]
 assert uniform_scheduler.INPUT_TYPES()["required"]["profile"][0] == ["h3_uniform_neutral"]
+assert uniform_scheduler.INPUT_TYPES()["required"]["steps"][1]["default"] == 19
+assert uniform_scheduler.INPUT_TYPES()["required"]["mode"][1]["default"] == "phase_offset_uniform"
+assert uniform_scheduler.INPUT_TYPES()["required"]["phase"][1]["default"] == 0.50
 assert uniform_scheduler.INPUT_TYPES()["required"]["auto_tail_steps"][1]["default"] is True
 assert uniform_scheduler.INPUT_TYPES()["required"]["tail_steps"][1]["default"] == 5
 '''
