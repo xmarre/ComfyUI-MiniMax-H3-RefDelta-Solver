@@ -9,6 +9,7 @@ from comfyui_refdelta_solver.sampler import (
     _write_stability_maps,
 )
 from comfyui_refdelta_solver.stochastic_control import (
+    apply_stochastic_control_gates,
     StochasticStabilityController,
     diffusion_change_ratio,
     smooth_stability_map,
@@ -440,3 +441,49 @@ def test_invalid_layout_fails_cleanly_for_spatial_control():
     controller = StochasticStabilityController(_spatial_config(), StreamLayout(12))
     with pytest.raises(ValueError, match="video shape"):
         controller.update_actual(torch.ones((1, 14)), None, 0)
+
+
+
+def test_frozen_control_gate_reuses_resolved_stream_gates_without_advancing_state():
+    config = RefDeltaSamplerConfig(
+        stochastic_control_mode="streamwise",
+        stochastic_adaptation_strength=0.75,
+        minimum_stochastic_multiplier=0.25,
+        stochastic_gate_slew_limit=0.10,
+    )
+    layout = StreamLayout(video_elements=2, video_shape=(1, 1, 1, 2))
+    controller = StochasticStabilityController(config, layout)
+    raw = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+    zero = raw.new_zeros(())
+    observation = TrajectoryObservation(
+        first=None,
+        second=None,
+        first_direction_cosine=None,
+        movement_rms=zero,
+        risk=raw.new_tensor(0.8),
+        stream_risks={"video": raw.new_tensor(0.8), "audio": raw.new_tensor(0.4)},
+        trajectory_risk=raw.new_tensor(0.8),
+        stream_trajectory_risks={
+            "video": raw.new_tensor(0.8),
+            "audio": raw.new_tensor(0.4),
+        },
+        stochastic_pressure=zero,
+        stream_stochastic_pressures={},
+        components={"video": {}, "audio": {}},
+    )
+    result = controller.apply(
+        raw,
+        observation,
+        raw.new_ones(()),
+        2,
+        10,
+    )
+    previous_video = controller._previous_video_gate
+    previous_audio = controller._previous_audio_gate
+
+    second = raw * 2
+    frozen = apply_stochastic_control_gates(second, layout, result)
+
+    torch.testing.assert_close(frozen, result.increment * 2, rtol=0, atol=0)
+    assert controller._previous_video_gate is previous_video
+    assert controller._previous_audio_gate is previous_audio

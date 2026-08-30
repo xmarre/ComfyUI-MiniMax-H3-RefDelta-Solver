@@ -1,7 +1,11 @@
 # ComfyUI MiniMax-H3 RefDelta Solver
 
-A dedicated ER-SDE-derived sampler for the
+A dedicated RefDelta-aware sampler family for the
 [MiniMax-H3 Pruned Ref-Delta Fused rank-1024 checkpoint](https://huggingface.co/xmarre/MiniMax-H3-Pruned-Ref-Delta-Fused-r1024-ComfyUI).
+
+The Stability Sampler can now use **ER-SDE, SEEDS-2, SEEDS-3, SA-Solver PEC, or SA-Solver PECE**
+from one `base_sampler` dropdown. ER-SDE remains the saved-workflow and production
+default until the additional backends complete the same real-media validation gate.
 
 The target checkpoint is conceptually FL2VA plus a rank-1024 approximation of the
 Ref2VA-from-FL2VA parameter delta, with exact/non-matrix delta pieces where applicable,
@@ -14,9 +18,11 @@ oracle and is **not** used to drive the production scheduler.
 Use:
 
 - **MiniMax H3 RefDelta Stability Sampler**;
+- `base_sampler = er_sde` for the currently validated production default, or select
+  `seeds_2`, `seeds_3`, `sa_solver`, or `sa_solver_pece` for the corresponding enhanced backend;
 - ComfyUI **BasicScheduler** with `scheduler = beta`;
 - the normal MiniMax-H3 `ModelSamplingAV` path;
-- Spectrum MiniMax H3 v0.2.20+ when Spectrum forecasting is enabled.
+- Spectrum MiniMax H3 v0.2.20+ for the existing ER-SDE interop; RefDelta SEEDS/SA-Solver interoperability requires the companion Spectrum multi-backend interop change (PR #91 or a release containing it). Active RefDelta SA-Solver PECE additionally requires the updated #91 active-PECE composition contract.
 
 The custom RefDelta scheduler is retained only for saved-workflow compatibility and
 scheduler research. The bundled `r1024_provisional` profile is neutral and should not be
@@ -42,6 +48,55 @@ the node while every production-relevant knob remains editable. There is no sepa
 sampler profile or calibration file to select. Diagnostic capture controls and legacy
 controller-mode selection are kept out of this node so ordinary workflows do not mix
 production tuning with research capture state.
+
+#### Base sampler family
+
+`base_sampler` selects the numerical solver underneath the shared RefDelta trajectory
+and stochastic-stability policy:
+
+| Value | Native solver geometry retained | RefDelta integration |
+| --- | --- | --- |
+| `er_sde` | ComfyUI ER-SDE stages/noise | Existing full RefDelta path, including adaptive ER order |
+| `seeds_2` | Native two-stage SEEDS and correlated stochastic decomposition | Outer-trajectory correction plus one frozen stochastic gate reused across both correlated noise segments |
+| `seeds_3` | Native three-stage SEEDS and correlated stochastic decomposition | Outer-trajectory correction plus one frozen stochastic gate reused across all three correlated noise segments |
+| `sa_solver` | Native SA-Solver PEC Adams predictor/corrector | RefDelta correction on each PEC endpoint evaluation plus gated native predictor noise |
+| `sa_solver_pece` | Native SA-Solver PECE predicted/corrected topology | P0 and exact corrected C_i calls own persistent RefDelta evidence; later predicted P_i calls stay ephemeral current-corrector inputs; native predictor noise is gated from the persistent endpoint |
+
+The SEEDS internal denoiser stages are intentionally not rewritten by RefDelta. Their
+multi-stage stochastic construction depends on correlated noise over overlapping intervals;
+the RefDelta gate is resolved once per outer interval and reused for every native segment so
+stage count cannot advance the controller or alter the solver's correlation structure.
+
+`sa_solver` means the native PEC path (`use_pece = false`). `sa_solver_pece` uses the
+same current ComfyUI defaults—`predictor_order = 3`, `corrector_order = 4`, and
+`simple_order_2 = false`—with `use_pece = true`.
+
+Active PECE is not treated as a two-stage fixed-stride sampler. Native ComfyUI calls
+`P0, P1, C1, P2, C2, ...`: the predicted and corrected evaluations at an outer coordinate
+share sigma but use different latent states. RefDelta mirrors native endpoint replacement:
+
+```text
+persistent RefDelta evidence = P0, C1, C2, C3, ...
+ephemeral PECE inputs        = P1, P2, P3, ...
+```
+
+Only persistent endpoint calls update RefDelta trajectory derivatives, spatiotemporal
+stability evidence, and the stochastic gate used for the following predictor noise. This
+avoids double-counting the same outer coordinate and prevents a Spectrum-predicted P_i from
+entering persistent RefDelta evidence. Trajectory correction is likewise applied to the
+persistent endpoint value, not twice to both P_i and C_i.
+
+`s_noise` is shared by all five backends. `max_stage` and `adaptive_order` are
+ER-SDE-specific numerical-order controls; SEEDS has its own fixed native stage geometry and
+SA-Solver has its native Adams orders. Calibration capture remains ER-SDE-only because its
+saved-state format is defined on the original ER-SDE outer trajectory.
+
+With RefDelta controls disabled, each new backend delegates directly to the corresponding
+native ComfyUI sampler. The instrumented zero-adaptation path is also covered by native
+same-input/same-noise parity fixtures so the wrapper cannot silently perturb solver behavior.
+
+The additional backends are newly implemented and automated-parity tested. They are not
+described here as media-validated production replacements for ER-SDE yet.
 
 Current empirically validated defaults:
 
