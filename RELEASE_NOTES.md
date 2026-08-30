@@ -1,3 +1,38 @@
+# MiniMax H3 RefDelta Solver v0.5.0
+
+## Selectable SEEDS and SA-Solver backends
+
+- Expanded the RefDelta Stability Sampler `base_sampler` selector from ER-SDE-only operation to **ER-SDE, SEEDS-2, SEEDS-3, SA-Solver PEC, and SA-Solver PECE**. ER-SDE remains the saved-workflow and production default while the additional backends complete broader real-media validation.
+- Delegated SEEDS and SA numerical equations to current ComfyUI rather than maintaining forked solver implementations. Native-equivalence mode remains a direct passthrough to the selected upstream sampler.
+- Added shared RefDelta trajectory correction, spatiotemporal stability control, stochastic gating, telemetry, and fail-closed validation around the new native backends without adding model evaluations.
+
+## SA-Solver PECE endpoint ownership
+
+- Added a distinct `sa_solver_pece` backend using native ComfyUI `sample_sa_solver(..., use_pece=True)` with the reviewed predictor/corrector defaults.
+- Modelled native PECE as `P0, P1/C1, P2/C2, ...` rather than a generic fixed-stride two-stage sampler: **P0 and exact corrected C_i evaluations own persistent RefDelta evidence**, while later predicted P_i evaluations remain ephemeral current-corrector inputs.
+- Prevented same-sigma predicted/corrected states from being double-counted in RefDelta trajectory history, derivative evidence, or stochastic-control state.
+- Persistent PECE endpoints must be actual model evaluations; a Spectrum-forecasted persistent endpoint fails closed rather than contaminating RefDelta evidence.
+- Preserved native SA predictor-noise call topology and RNG/noise geometry for both PEC and PECE.
+
+## SEEDS stochastic geometry
+
+- Added RefDelta SEEDS-2 and SEEDS-3 wrappers while retaining the native internal stage structure and correlated stochastic decomposition.
+- RefDelta resolves one stochastic gate per outer interval and reuses it for all native noise segments in that interval, avoiding controller-state advancement on internal SEEDS stages.
+- Persistent trajectory/stability evidence remains actual-only and outer-coordinate-owned.
+
+## Spectrum interoperability and compatibility
+
+- Added the versioned RefDelta/Spectrum backend contract for SEEDS and SA-Solver composition. Spectrum classifies completed logical H3 calls as actual/forecast while RefDelta retains ownership of its reviewed evidence topology.
+- RefDelta SEEDS/SA interoperability requires the companion Spectrum multi-backend integration from Spectrum PR #91 or a release containing it; standalone RefDelta use does not depend on Spectrum.
+- Calibration capture remains ER-SDE-only because its persisted diagnostic format belongs to the original ER-SDE trajectory.
+- Existing saved workflows continue to default to `base_sampler = er_sde`.
+
+## Validation
+
+- Added native same-input/same-noise parity coverage for SEEDS-2, SEEDS-3, SA-Solver PEC, and SA-Solver PECE.
+- Added explicit PECE predicted/corrected endpoint-ownership tests, persistent-endpoint forecast rejection, selector/import coverage, and native SA noise-sampler call-topology checks.
+- The reviewed multi-backend implementation passed the full pinned ComfyUI/Python CI matrix; the current SEEDS/SA-capable lane completed **292 tests**.
+
 # MiniMax H3 RefDelta Solver v0.4.0
 
 ## Experimental H3 uniform-flow scheduler
