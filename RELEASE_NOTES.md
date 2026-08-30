@@ -1,3 +1,25 @@
+# MiniMax H3 RefDelta Solver v0.6.0
+
+## Dedicated SA-Solver scheduler
+
+- Added the separate `MiniMaxH3SASolverScheduler` node for native ComfyUI SA-Solver PEC/PECE outer-point placement.
+- Kept `simple_control` as the default, delegating exactly to current ComfyUI `simple` including BasicScheduler-style denoise-tail behavior.
+- Added `simple_adams_bounded` as a tightly constrained research alternative. It may move at most one interior H3 shared-base node, keeps every local interval within 87.5%..112.5% of the corresponding simple interval, and limits node displacement to 0.125 mean simple intervals.
+- Rejected the earlier lambda-uniform/lambda-blend scheduler family after it produced visibly bugged decoded MiniMax-H3 media. Those modes remain diagnostic-only in the inspection tool and are not user-facing.
+
+## Real-media result
+
+- Final 10-outer-step production testing with RefDelta SA-Solver PECE, Spectrum, DiffAid, Untwist-RoPE, and H3 Continuum produced acceptable decoded output with both public scheduler modes.
+- `simple_control` was slightly preferred perceptually over `simple_adams_bounded`; it therefore remains the released default.
+- The bounded candidate's lower worst native Adams L1 coefficient norm did not establish a perceptual quality advantage, so no stronger quality claim is made.
+- Companion Spectrum testing found its `balanced` active-PECE forecast policy preferable to `max_speed` in the tested workflow while both paths remained structurally clean.
+
+## Validation
+
+- Preserved native SA-Solver equations, predictor/corrector order, PECE endpoint replacement, stochastic variance, RNG/noise topology, callbacks, Spectrum cadence ownership, RefDelta evidence ownership, and H3 Continuum/hard-transition rules.
+- Added exact ComfyUI-simple parity, denoise-tail, bounded-geometry, non-default shift/multiplier, malformed-metadata, JSON-safe diagnostic, packaging, registration, and regression coverage.
+- Final PR-head CI passed all five pinned ComfyUI/Python lanes with 361 tests in the SA/SEEDS-capable lane, plus Ruff, compileall, and wheel build.
+
 # MiniMax H3 RefDelta Solver v0.5.0
 
 ## Selectable SEEDS and SA-Solver backends

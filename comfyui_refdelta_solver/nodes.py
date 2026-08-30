@@ -23,6 +23,7 @@ from .sampler_backends import (
     sample_refdelta_seeds_2,
     sample_refdelta_seeds_3,
 )
+from .sa_scheduler import SA_SCHEDULER_MODES, h3_sa_solver_sigmas
 from .scheduler import load_profile, sigmas_from_profile
 
 
@@ -526,6 +527,62 @@ class MiniMaxH3UniformFlowScheduler:
         return (sigmas,)
 
 
+class MiniMaxH3SASolverScheduler:
+    """Dedicated bounded base-time schedule research node for MiniMax-H3 SA-Solver."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "steps": (
+                    "INT",
+                    {
+                        "default": 10,
+                        "min": 1,
+                        "max": 10000,
+                        "tooltip": "Number of outer SA-Solver intervals; PECE phase count is unchanged.",
+                    },
+                ),
+                "denoise": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "Matches ComfyUI BasicScheduler tail-slicing semantics.",
+                    },
+                ),
+                "mode": (
+                    list(SA_SCHEDULER_MODES),
+                    {
+                        "default": "simple_control",
+                        "tooltip": (
+                            "simple_control is exact ComfyUI simple. simple_adams_bounded permits "
+                            "one solver-native local base-time transfer around the worst Adams L1 "
+                            "record while enforcing a hard 0.875x..1.125x interval envelope."
+                        ),
+                    },
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("SIGMAS",)
+    RETURN_NAMES = ("sigmas",)
+    FUNCTION = "get_sigmas"
+    CATEGORY = "sampling/custom_sampling/schedulers"
+    DESCRIPTION = (
+        "Experimental MiniMax-H3 scheduler designed for native SA-Solver PEC/PECE. "
+        "It changes outer point placement only: sampler equations, stochastic noise, "
+        "predictor/corrector topology, callbacks, and NFE count remain native."
+    )
+
+    def get_sigmas(self, model, steps, denoise, mode):
+        model_sampling = model.get_model_object("model_sampling")
+        return (h3_sa_solver_sigmas(model_sampling, steps, denoise, mode),)
+
+
 class MiniMaxH3RefDeltaReferenceGuider:
     """Deprecated simultaneous dual-model diagnostic retained for saved workflows."""
 
@@ -575,6 +632,7 @@ NODE_CLASS_MAPPINGS = {
     "MiniMaxH3RefDeltaReferenceReplaySampler": MiniMaxH3RefDeltaReferenceReplaySampler,
     "MiniMaxH3RefDeltaScheduler": MiniMaxH3RefDeltaScheduler,
     "MiniMaxH3UniformFlowScheduler": MiniMaxH3UniformFlowScheduler,
+    "MiniMaxH3SASolverScheduler": MiniMaxH3SASolverScheduler,
     "MiniMaxH3RefDeltaReferenceGuider": MiniMaxH3RefDeltaReferenceGuider,
 }
 
@@ -585,5 +643,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3RefDeltaReferenceReplaySampler": "[Legacy] MiniMax H3 RefDelta Reference Replay",
     "MiniMaxH3RefDeltaScheduler": "[Legacy/Research] MiniMax H3 RefDelta Scheduler",
     "MiniMaxH3UniformFlowScheduler": "MiniMax H3 Uniform Flow Scheduler [Experimental]",
+    "MiniMaxH3SASolverScheduler": "MiniMax H3 SA-Solver Scheduler [Experimental]",
     "MiniMaxH3RefDeltaReferenceGuider": "[Legacy] MiniMax H3 RefDelta Reference Guider",
 }

@@ -53,6 +53,16 @@ assert uniform_scheduler.INPUT_TYPES()["required"]["mode"][1]["default"] == "pha
 assert uniform_scheduler.INPUT_TYPES()["required"]["phase"][1]["default"] == 0.50
 assert uniform_scheduler.INPUT_TYPES()["required"]["auto_tail_steps"][1]["default"] is True
 assert uniform_scheduler.INPUT_TYPES()["required"]["tail_steps"][1]["default"] == 5
+assert "MiniMaxH3SASolverScheduler" in module.NODE_CLASS_MAPPINGS
+assert module.NODE_DISPLAY_NAME_MAPPINGS["MiniMaxH3SASolverScheduler"] == "MiniMax H3 SA-Solver Scheduler [Experimental]"
+sa_scheduler = module.NODE_CLASS_MAPPINGS["MiniMaxH3SASolverScheduler"]
+assert sa_scheduler.INPUT_TYPES()["required"]["steps"][1]["default"] == 10
+assert sa_scheduler.INPUT_TYPES()["required"]["mode"][0] == [
+    "simple_control",
+    "simple_adams_bounded",
+]
+assert sa_scheduler.INPUT_TYPES()["required"]["mode"][1]["default"] == "simple_control"
+assert "lambda_blend" not in sa_scheduler.INPUT_TYPES()["required"]
 '''
 
     result = subprocess.run(

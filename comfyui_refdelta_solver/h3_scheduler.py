@@ -120,11 +120,20 @@ def shifted_sigma_to_base(sigma: torch.Tensor, shift: float) -> torch.Tensor:
 def _validated_sampling_metadata(model_sampling: Any) -> tuple[torch.Tensor, float, float, float]:
     required = ("sigmas", "sigma", "shift", "audio_shift", "multiplier")
     if any(not hasattr(model_sampling, name) for name in required):
-        raise ValueError("MiniMax H3 uniform-flow scheduler requires ModelSamplingAV")
+        raise ValueError("MiniMax H3 schedulers require ModelSamplingAV")
 
-    shift = float(model_sampling.shift)
-    audio_shift = float(model_sampling.audio_shift)
-    multiplier = float(model_sampling.multiplier)
+    try:
+        shift = float(model_sampling.shift)
+    except (TypeError, ValueError) as error:
+        raise ValueError("H3 video shift must be positive and finite") from error
+    try:
+        audio_shift = float(model_sampling.audio_shift)
+    except (TypeError, ValueError) as error:
+        raise ValueError("H3 audio shift must be positive and finite") from error
+    try:
+        multiplier = float(model_sampling.multiplier)
+    except (TypeError, ValueError) as error:
+        raise ValueError("model sampling multiplier must be positive and finite") from error
     if not math.isfinite(shift) or shift <= 0.0:
         raise ValueError("H3 video shift must be positive and finite")
     if not math.isfinite(audio_shift) or audio_shift <= 0.0:

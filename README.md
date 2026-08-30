@@ -377,33 +377,135 @@ Schedule curves and implied audio times can be exported without running the mode
 python tools/inspect_h3_schedule.py --mode phase_offset_uniform --steps 19 --phase 0.50 --format csv
 ```
 
-The curvature mode uses a version-2 `shared-base-time-progress-density` schema so legacy
-version-1 beta-prior profiles cannot be silently reinterpreted. Build a profile from
-production trajectory telemetry and pass its path through the advanced `profile_path`
-control:
+### MiniMax H3 SA-Solver Scheduler [Experimental]
 
-```bash
-python tools/build_profile.py \
-  ComfyUI/output/refdelta_telemetry/*.csv \
-  --output /tmp/h3_shared_flow_research.json \
-  --id h3_shared_flow_research \
-  --experimental-stability-density \
-  --shared-flow-density \
-  --video-shift 12.0
+This separate node investigates point placement for native ComfyUI SA-Solver PEC and
+PECE. It changes only the outer sigma coordinates. SA-Solver remains authoritative for
+predictor/corrector order, PECE endpoint replacement, stochastic variance, RNG/noise
+draws, callbacks, and model-call count.
+
+The default remains:
+
+```text
+steps = 10
+mode = simple_control
+denoise = 1.0
 ```
 
-The builder removes `comparison_*` and `ref_delta_*` fields before binning and marks the
-result as non-production. Experimental v2 density accepts only rows explicitly marked
-`actual_model_evaluation=true`; missing or forecast-only telemetry fails closed rather than
-redistributing cached Spectrum observations into forecast sigma bins. `--video-shift` must
-match the source telemetry run; it is stored in the profile and used to invert video sigma
-back to shared base time. Existing version-1 beta-prior profiles and the legacy scheduler
-retain their original semantics.
+`simple_control` delegates to current ComfyUI `simple` and preserves exact
+BasicScheduler-style denoise-tail behavior.
 
-The released default reflects real final-media A/B testing, but scheduler quality remains
-prompt-, seed-, checkpoint-, and step-count-dependent. Keep `legacy_ddim_uniform`,
-`uniform_linspace`, and stock `beta` available as controls when validating another
-workflow.
+Final 10-outer-step production testing covered the real MiniMax-H3 stack with RefDelta
+SA-Solver PECE, Spectrum, DiffAid, Untwist-RoPE, and H3 Continuum. Both public modes
+produced acceptable decoded output. `simple_control` was slightly preferred perceptually
+over `simple_adams_bounded`, so the exact ComfyUI-simple control remains the default.
+The bounded mode remains available as an experimental research alternative; its lower
+worst native Adams L1 coefficient norm is not presented as a decoded-media quality win.
+
+The companion Spectrum active-PECE tests also found the `balanced` forecast policy
+perceptually preferable to `max_speed` in the tested workflow while both remained
+structurally clean. Spectrum owns that forecast cadence; this scheduler only supplies the
+outer sigma coordinates.
+
+#### Why the original lambda-uniform design was rejected
+
+SA-Solver constructs its Adams coefficients in half-log-SNR/lambda space. For MiniMax-H3
+CONST flow sampling, ComfyUI uses effectively:
+
+```text
+lambda = log((1 - sigma) / sigma)
+```
+
+That fact does **not** imply that scheduler nodes should be uniformly spaced in lambda.
+The first PR implementation tested that hypothesis with `simple_lambda_uniform` and
+`simple_lambda_blend`. Both produced visibly bugged decoded MiniMax-H3 output in the
+real production workflow and therefore failed the media gate.
+
+The numerical failure mode was clear in shared H3 base time. At 10 steps, full
+lambda-uniform spacing compressed the first control interval from about `0.1` to
+`0.000355` while later intervals grew to roughly `0.30`. The 0.50 blend still
+compressed the first interval to about `0.00625` and expanded another beyond `0.20`.
+The Adams coefficients remained finite, so finite coefficient geometry alone was not a
+sufficient media-validity test.
+
+Those failed modes have been removed from the user-facing node. The inspection tool keeps
+them only as explicitly named diagnostic controls:
+
+- `failed_simple_lambda_uniform`;
+- `failed_simple_lambda_blend`.
+
+#### Bounded Adams-conditioned replacement
+
+The public research candidate is now:
+
+```text
+simple_adams_bounded
+```
+
+It treats the ComfyUI simple/shared-base trajectory as primary geometry and uses native
+SA coefficient information only to make one tightly bounded local adjustment.
+
+For the longer full schedule implied by `steps` and `denoise`:
+
+1. build exact ComfyUI `simple`;
+2. convert that schedule to H3 shared base time;
+3. compute native predictor-order-3/corrector-order-4 SA coefficients using ComfyUI's own
+   `compute_stochastic_adams_b_coeffs`;
+4. identify the record with the largest coefficient L1 norm;
+5. consider only the interpolation-support nodes used by that record;
+6. move at most one interior base-time node, transferring width only between its two
+   adjacent intervals;
+7. search the deterministic local displacements `±0.5` and `±1.0` times a
+   12.4% local-interval guard;
+8. select the trial with the lowest global worst Adams L1 norm;
+9. keep `simple` unchanged if no trial improves that objective.
+
+The 12.4% internal search guard exists so float32 sigma round-tripping remains safely
+inside the public hard contract:
+
+```text
+0.875 * Δu_simple_i <= Δu_candidate_i <= 1.125 * Δu_simple_i
+max |u_candidate_i - u_simple_i| <= 0.125 * mean(Δu_simple)
+```
+
+The contract is checked after conversion back to the actual float32 sigma schedule that
+downstream samplers receive. Invalid or non-monotone candidates are rejected rather than
+silently clipped into shape.
+
+The candidate remains deliberately modest:
+
+| Outer steps | Control node -> bounded node | Min/max interval ratio vs simple | Worst Adams L1: simple -> bounded |
+| ---: | --- | --- | --- |
+| 10 | `u[4] ≈ 0.600000 -> 0.612400` | `0.876 / 1.124` | `0.426531 -> 0.402478` |
+| 19 | `u[14] ≈ 0.264000 -> 0.260776` | `0.939 / 1.062` | `0.500922 -> 0.455545` |
+
+This improves the selected solver-native L1 diagnostic, but it does **not** improve the
+global maximum absolute coefficient or maximum L2 coefficient in the reviewed 10/19-step
+cases. Those limits are documented rather than hidden.
+
+MiniMax-H3 still uses one audiovisual clock. Returned video sigma is one representation
+of a shared base-flow coordinate; `ModelSamplingAV` remains authoritative for the
+corresponding audio state. Runtime `shift`, `audio_shift`, and `multiplier` are read
+from the loaded model and are not hardcoded.
+
+Inspect schedules without running the model with:
+
+```bash
+python tools/inspect_sa_schedule.py \
+  --comfyui-path /path/to/ComfyUI \
+  --comfyui-revision 8a33128f2f8c5585c57486c07de481241e70a39c \
+  --steps 10 \
+  --output /tmp/sa-schedule-10.json
+```
+
+The report includes returned/effective sigma, shared base time, implied audio sigma,
+lambda, interval deltas, interval ratios versus `simple`, node displacement, and native Adams
+diagnostics. It also keeps the media-failed lambda schedules available as diagnostic-only
+comparators so their extreme base-time distortion remains reproducible.
+
+The node remains **experimental**. The bounded candidate has passed synthetic validation
+only; it must still pass matched decoded MiniMax-H3 media testing before any default or
+release recommendation changes. `simple_control` remains the default.
 
 ### [Legacy/Research] MiniMax H3 RefDelta Scheduler
 
@@ -515,8 +617,8 @@ python -m ruff check .
 python -m compileall -q comfyui_refdelta_solver tests tools
 ```
 
-CI also checks native ER-SDE fixture parity across pinned ComfyUI revisions and builds the
-installable wheel.
+CI also checks native ER-SDE, SEEDS, SA-Solver, and scheduler fixtures across pinned
+ComfyUI revisions and builds the installable wheel.
 
 ## License
 
