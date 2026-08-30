@@ -20,6 +20,7 @@ Use:
 - **MiniMax H3 RefDelta Stability Sampler**;
 - `base_sampler = er_sde` for the currently validated production default, or select
   `seeds_2`, `seeds_3`, `sa_solver`, or `sa_solver_pece` for the corresponding enhanced backend;
+- remember that `steps` means **outer sigma intervals**: SEEDS-2/3 and active PECE expose substantially more logical H3 model-call opportunities than the same numeric step count on ER-SDE/SA PEC;
 - ComfyUI **BasicScheduler** with `scheduler = beta`;
 - the normal MiniMax-H3 `ModelSamplingAV` path;
 - Spectrum MiniMax H3 v0.2.20+ for the existing ER-SDE interop; RefDelta SEEDS/SA-Solver interoperability requires the companion Spectrum multi-backend interop change (PR #91 or a release containing it). Active RefDelta SA-Solver PECE additionally requires the updated #91 active-PECE composition contract.
@@ -54,13 +55,34 @@ production tuning with research capture state.
 `base_sampler` selects the numerical solver underneath the shared RefDelta trajectory
 and stochastic-stability policy:
 
-| Value | Native solver geometry retained | RefDelta integration |
-| --- | --- | --- |
-| `er_sde` | ComfyUI ER-SDE stages/noise | Existing full RefDelta path, including adaptive ER order |
-| `seeds_2` | Native two-stage SEEDS and correlated stochastic decomposition | Outer-trajectory correction plus one frozen stochastic gate reused across both correlated noise segments |
-| `seeds_3` | Native three-stage SEEDS and correlated stochastic decomposition | Outer-trajectory correction plus one frozen stochastic gate reused across all three correlated noise segments |
-| `sa_solver` | Native SA-Solver PEC Adams predictor/corrector | RefDelta correction on each PEC endpoint evaluation plus gated native predictor noise |
-| `sa_solver_pece` | Native SA-Solver PECE predicted/corrected topology | P0 and exact corrected C_i calls own persistent RefDelta evidence; later predicted P_i calls stay ephemeral current-corrector inputs; native predictor noise is gated from the persistent endpoint |
+| Value | Native solver geometry retained | H3 model-call opportunities for `N` outer steps* | RefDelta integration |
+| --- | --- | ---: | --- |
+| `er_sde` | ComfyUI ER-SDE stages/noise | `N` | Existing full RefDelta path, including adaptive ER order |
+| `seeds_2` | Native two-stage SEEDS and correlated stochastic decomposition | `2N - 1` | Outer-trajectory correction plus one frozen stochastic gate reused across both correlated noise segments |
+| `seeds_3` | Native three-stage SEEDS and correlated stochastic decomposition | `3N - 2` | Outer-trajectory correction plus one frozen stochastic gate reused across all three correlated noise segments |
+| `sa_solver` | Native SA-Solver PEC Adams predictor/corrector | `N` | RefDelta correction on each PEC endpoint evaluation plus gated native predictor noise |
+| `sa_solver_pece` | Native SA-Solver PECE predicted/corrected topology | `2N - 1` | P0 and exact corrected C_i calls own persistent RefDelta evidence; later predicted P_i calls stay ephemeral current-corrector inputs; native predictor noise is gated from the persistent endpoint |
+
+\* Counts above assume the usual terminal-zero sigma schedule. The `sa_solver_pece`
+`2N - 1` row additionally assumes active PECE with `corrector_order > 0`; with
+`corrector_order = 0`, it reduces to `N` logical H3 model-call opportunities. The ComfyUI
+**steps** setting counts outer sigma intervals, not logical H3 model-call opportunities.
+SEEDS-2/3 expose internal-stage calls on every nonterminal outer interval, while active
+PECE exposes both predicted and corrected calls after P0.
+
+Concrete examples:
+
+The numeric cells below are logical H3 model-call opportunities:
+
+| Outer steps | ER-SDE / SA PEC | SEEDS-2 | SEEDS-3 | SA-Solver PECE |
+| ---: | ---: | ---: | ---: | ---: |
+| 10 | 10 | 19 | 28 | 19 |
+| 19 | 19 | 37 | 55 | 37 |
+
+So a 10-step `sa_solver_pece` run legitimately exposes 19 logical H3 model-call
+opportunities (`P0` plus nine predicted/corrected pairs), and a 10-step SEEDS-3 run
+exposes 28. This does **not** mean the scheduler secretly changed the outer step count. It is native solver
+geometry, and raw step counts are therefore not NFE-equivalent across these backends.
 
 The SEEDS internal denoiser stages are intentionally not rewritten by RefDelta. Their
 multi-stage stochastic construction depends on correlated noise over overlapping intervals;

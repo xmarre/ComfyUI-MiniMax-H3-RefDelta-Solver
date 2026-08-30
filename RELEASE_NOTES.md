@@ -1,5 +1,29 @@
 # MiniMax H3 RefDelta Solver v0.6.0
 
+## Important: outer steps are not H3 model-call counts
+
+The `steps` value supplied by the scheduler counts outer sigma intervals. The selectable
+native backends do not all expose one logical H3 model-call opportunity per outer interval.
+
+For the usual terminal-zero schedule, with `N = len(sigmas) - 1`:
+
+| RefDelta backend | Native H3 model-call opportunities | 10 outer steps | 19 outer steps |
+| --- | ---: | ---: | ---: |
+| `er_sde` | `N` | 10 | 19 |
+| `seeds_2` | `2N - 1` | 19 | 37 |
+| `seeds_3` | `3N - 2` | 28 | 55 |
+| `sa_solver` (PEC) | `N` | 10 | 19 |
+| `sa_solver_pece` (active corrector) | `2N - 1` | 19 | 37 |
+
+SEEDS exposes internal denoiser-stage calls on every nonterminal interval; the final
+sigma-to-zero interval terminates directly. Active PECE with `corrector_order > 0`
+exposes `P0`, then `P1/C1, P2/C2, ...`, so it has `N` predicted opportunities plus
+`N - 1` corrected opportunities. With `corrector_order = 0`, PECE collapses to `N`.
+
+This distinction is important for performance comparisons and Spectrum telemetry. For
+example, the released 10-outer-step PECE validation reporting 13 actual / 6 forecast is
+a split across **19 logical H3 model-call opportunities**, not 19 scheduler steps.
+
 ## Dedicated SA-Solver scheduler
 
 - Added the separate `MiniMaxH3SASolverScheduler` node for native ComfyUI SA-Solver PEC/PECE outer-point placement.
@@ -26,7 +50,7 @@
 
 - Expanded the RefDelta Stability Sampler `base_sampler` selector from ER-SDE-only operation to **ER-SDE, SEEDS-2, SEEDS-3, SA-Solver PEC, and SA-Solver PECE**. ER-SDE remains the saved-workflow and production default while the additional backends complete broader real-media validation.
 - Delegated SEEDS and SA numerical equations to current ComfyUI rather than maintaining forked solver implementations. Native-equivalence mode remains a direct passthrough to the selected upstream sampler.
-- Added shared RefDelta trajectory correction, spatiotemporal stability control, stochastic gating, telemetry, and fail-closed validation around the new native backends without adding model evaluations.
+- Added shared RefDelta trajectory correction, spatiotemporal stability control, stochastic gating, telemetry, and fail-closed validation around the new native backends without adding H3 calls beyond each backend's native topology.
 
 ## SA-Solver PECE endpoint ownership
 
