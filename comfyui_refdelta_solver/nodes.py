@@ -16,19 +16,62 @@ from .config import (
 from .diagnostics import RefDeltaReferenceGuiderMixin
 from .h3_scheduler import SCHEDULER_MODES, h3_uniform_flow_sigmas, load_flow_profile
 from .sampler import sample_refdelta_er_sde
+from .sampler_backends import (
+    REFDELTA_BASE_SAMPLERS,
+    sample_refdelta_sa_solver,
+    sample_refdelta_sa_solver_pece,
+    sample_refdelta_seeds_2,
+    sample_refdelta_seeds_3,
+)
 from .scheduler import load_profile, sigmas_from_profile
 
 
-def _ksampler(config: RefDeltaSamplerConfig, s_noise: float, max_stage: int):
+def _ksampler(
+    config: RefDeltaSamplerConfig,
+    s_noise: float,
+    max_stage: int,
+    base_sampler: str = "er_sde",
+):
     import comfy.samplers
 
     config.validate()
-    return (
-        comfy.samplers.KSAMPLER(
-            sample_refdelta_er_sde,
-            extra_options={"config": config, "s_noise": s_noise, "max_stage": max_stage},
-        ),
-    )
+    if base_sampler == "er_sde":
+        function = sample_refdelta_er_sde
+        options = {"config": config, "s_noise": s_noise, "max_stage": max_stage}
+    elif base_sampler == "seeds_2":
+        function = sample_refdelta_seeds_2
+        options = {
+            "config": config,
+            "eta": 1.0,
+            "s_noise": s_noise,
+            "r": 0.5,
+            "solver_type": "phi_1",
+        }
+    elif base_sampler == "seeds_3":
+        function = sample_refdelta_seeds_3
+        options = {
+            "config": config,
+            "eta": 1.0,
+            "s_noise": s_noise,
+            "r_1": 1.0 / 3.0,
+            "r_2": 2.0 / 3.0,
+        }
+    elif base_sampler in {"sa_solver", "sa_solver_pece"}:
+        function = (
+            sample_refdelta_sa_solver_pece
+            if base_sampler == "sa_solver_pece"
+            else sample_refdelta_sa_solver
+        )
+        options = {
+            "config": config,
+            "s_noise": s_noise,
+            "predictor_order": 3,
+            "corrector_order": 4,
+            "simple_order_2": False,
+        }
+    else:
+        raise ValueError(f"unsupported RefDelta base_sampler {base_sampler!r}")
+    return (comfy.samplers.KSAMPLER(function, extra_options=options),)
 
 
 def _with_default(spec, default):
@@ -80,6 +123,7 @@ class MiniMaxH3RefDeltaSampler:
                 "video_stability_full_fraction": ("FLOAT", {"default": 0.30, "min": 0.0, "max": 1.0, "step": 0.01, "advanced": True}),
                 "stochastic_gate_slew_limit": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01, "advanced": True}),
                 "debug_stability_maps": ("BOOLEAN", {"default": False, "advanced": True}),
+                "base_sampler": (list(REFDELTA_BASE_SAMPLERS), {"default": "er_sde"}),
             }
         }
 
@@ -88,8 +132,9 @@ class MiniMaxH3RefDeltaSampler:
     FUNCTION = "build"
     CATEGORY = "sampling/custom_sampling/samplers"
     DESCRIPTION = (
-        "Advanced/manual RefDelta ER-SDE sampler. Preserves released defaults and exposes "
-        "diagnostic capture plus every stochastic-controller knob."
+        "Advanced/manual RefDelta sampler family. Select ER-SDE, SEEDS-2, SEEDS-3, "
+        "SA-Solver PEC, or SA-Solver PECE while keeping shared trajectory and "
+        "stochastic-stability controls."
     )
 
     def build(
@@ -128,6 +173,7 @@ class MiniMaxH3RefDeltaSampler:
         video_stability_full_fraction,
         stochastic_gate_slew_limit,
         debug_stability_maps,
+        base_sampler="er_sde",
     ):
         config = RefDeltaSamplerConfig(
             adaptive_order=adaptive_order,
@@ -163,7 +209,7 @@ class MiniMaxH3RefDeltaSampler:
             stochastic_gate_slew_limit=stochastic_gate_slew_limit,
             debug_stability_maps=debug_stability_maps,
         )
-        return _ksampler(config, s_noise, max_stage)
+        return _ksampler(config, s_noise, max_stage, base_sampler)
 
 
 class MiniMaxH3RefDeltaProductionSampler(MiniMaxH3RefDeltaSampler):
@@ -212,8 +258,9 @@ class MiniMaxH3RefDeltaProductionSampler(MiniMaxH3RefDeltaSampler):
         return inputs
 
     DESCRIPTION = (
-        "Recommended MiniMax-H3 RefDelta sampler preset for the rank-1024 INT8 ConvRot "
-        "checkpoint. Uses spatiotemporal stability control; all production tuning remains exposed."
+        "Recommended MiniMax-H3 RefDelta sampler-family preset for the rank-1024 INT8 ConvRot "
+        "checkpoint. Choose the enhanced base sampler from one dropdown while retaining the "
+        "shared spatiotemporal stability controls."
     )
 
     def build(
@@ -249,6 +296,7 @@ class MiniMaxH3RefDeltaProductionSampler(MiniMaxH3RefDeltaSampler):
         video_stability_full_fraction,
         stochastic_gate_slew_limit,
         debug_stability_maps,
+        base_sampler="er_sde",
     ):
         config = production_stability_config(
             adaptive_order=adaptive_order,
@@ -281,7 +329,7 @@ class MiniMaxH3RefDeltaProductionSampler(MiniMaxH3RefDeltaSampler):
             stochastic_gate_slew_limit=stochastic_gate_slew_limit,
             debug_stability_maps=debug_stability_maps,
         )
-        return _ksampler(config, s_noise, max_stage)
+        return _ksampler(config, s_noise, max_stage, base_sampler)
 
 
 class MiniMaxH3RefDeltaComparisonReplaySampler:

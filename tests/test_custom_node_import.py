@@ -37,6 +37,11 @@ assert module.NODE_CLASS_MAPPINGS
 assert module.NODE_DISPLAY_NAME_MAPPINGS
 assert "MiniMaxH3RefDeltaProductionSampler" in module.NODE_CLASS_MAPPINGS
 assert module.NODE_DISPLAY_NAME_MAPPINGS["MiniMaxH3RefDeltaProductionSampler"] == "MiniMax H3 RefDelta Stability Sampler"
+advanced_sampler = module.NODE_CLASS_MAPPINGS["MiniMaxH3RefDeltaSampler"]
+production_sampler = module.NODE_CLASS_MAPPINGS["MiniMaxH3RefDeltaProductionSampler"]
+assert advanced_sampler.INPUT_TYPES()["required"]["base_sampler"][0] == ["er_sde", "seeds_2", "seeds_3", "sa_solver", "sa_solver_pece"]
+assert production_sampler.INPUT_TYPES()["required"]["base_sampler"][0] == ["er_sde", "seeds_2", "seeds_3", "sa_solver", "sa_solver_pece"]
+assert production_sampler.INPUT_TYPES()["required"]["base_sampler"][1]["default"] == "er_sde"
 assert "MiniMaxH3UniformFlowScheduler" in module.NODE_CLASS_MAPPINGS
 assert module.NODE_DISPLAY_NAME_MAPPINGS["MiniMaxH3UniformFlowScheduler"] == "MiniMax H3 Uniform Flow Scheduler [Experimental]"
 legacy_scheduler = module.NODE_CLASS_MAPPINGS["MiniMaxH3RefDeltaScheduler"]

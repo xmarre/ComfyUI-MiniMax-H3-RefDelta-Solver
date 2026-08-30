@@ -22,6 +22,10 @@ jobs:
         include:
           - comfy_ref: b78cec879b9460d5cb25228a83a942fb78d2cd24
             python_version: "3.13"
+          - comfy_ref: 2504e68d4d9dedb514e172692f13436623f25aed
+            python_version: "3.12"
+            comfy_kitchen_version: "0.2.31"
+            comfy_aimdo_version: "0.4.15"
     runs-on: ubuntu-latest
     steps:
       - name: Check out custom node
@@ -44,10 +48,13 @@ jobs:
           cache: pip
 
       - name: Install test dependencies
+        env:
+          COMFY_KITCHEN_VERSION: ${{ matrix.comfy_kitchen_version || '0.2.26' }}
+          COMFY_AIMDO_VERSION: ${{ matrix.comfy_aimdo_version || '0.4.13' }}
         run: |
           python -m pip install --upgrade pip
           python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install pytest ruff numpy scipy torchsde psutil safetensors einops tqdm pyyaml pillow packaging transformers tokenizers sentencepiece aiohttp yarl alembic SQLAlchemy filelock av requests simpleeval blake3 comfy-kitchen==0.2.26 comfy-aimdo==0.4.13
+          python -m pip install pytest ruff numpy scipy torchsde psutil safetensors einops tqdm pyyaml pillow packaging transformers tokenizers sentencepiece aiohttp yarl alembic SQLAlchemy filelock av requests simpleeval blake3 "comfy-kitchen==${COMFY_KITCHEN_VERSION}" "comfy-aimdo==${COMFY_AIMDO_VERSION}"
           python -m pip wheel --no-deps --wheel-dir /tmp/refdelta-solver-wheel .
 
       - name: Run Ruff and compileall

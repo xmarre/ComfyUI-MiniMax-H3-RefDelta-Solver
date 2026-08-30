@@ -182,6 +182,39 @@ class StochasticControlResult:
         return self.increment.new_ones(())
 
 
+def apply_stochastic_control_gates(
+    native_increment: torch.Tensor,
+    layout: StreamLayout,
+    result: StochasticControlResult,
+) -> torch.Tensor:
+    """Apply an already-resolved control gate without advancing controller state.
+
+    Multi-stage stochastic solvers must reuse one outer-interval gate across all
+    correlated noise segments. Re-running StochasticStabilityController.apply()
+    for every segment would advance slew state multiple times in one solver
+    interval and would make the gate depend on stage count.
+    """
+    video_gate = result.video_applied_gate
+    audio_gate = result.audio_applied_gate
+    if video_gate is None or audio_gate is None:
+        raise ValueError("stochastic control result does not contain resolved stream gates")
+
+    streams = layout.split(native_increment)
+    if set(streams) != {"video", "audio"}:
+        raise ValueError("frozen stochastic control requires packed H3 video and audio streams")
+
+    video = streams["video"]
+    audio = streams["audio"]
+    video_gate = video_gate.to(device=video.device, dtype=video.dtype)
+    audio_gate = audio_gate.to(device=audio.device, dtype=audio.dtype)
+    if video_gate.ndim > 0:
+        latent = layout.video_to_latent(video)
+        video = layout.latent_to_video(latent * video_gate, packed_like=video)
+    else:
+        video = video * video_gate
+    return layout.combine(video, audio * audio_gate)
+
+
 class StochasticStabilityController:
     """Invocation-local stochastic control and actual-only stability evidence."""
 
@@ -470,6 +503,7 @@ class StochasticStabilityController:
 __all__ = [
     "StochasticControlResult",
     "StochasticStabilityController",
+    "apply_stochastic_control_gates",
     "diffusion_change_ratio",
     "smooth_stability_map",
     "stability_progress_gate",
